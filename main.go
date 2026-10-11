@@ -17,13 +17,15 @@ const identityURL = "https://health.googleapis.com/v4/users/me/identity"
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		log.Fatal("не удалось загрузить .env: ", err)
+		log.Fatal(err)
 	}
 
-	token := os.Getenv("GOOGLE_HEALTH_ACCESS_TOKEN")
-	if token == "" {
-		log.Fatal("GOOGLE_HEALTH_ACCESS_TOKEN не задан")
+	tokens, err := RefreshAccessToken()
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	accessToken := tokens.AccessToken
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -38,7 +40,7 @@ func main() {
 		fatal(err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
 
 	client := &http.Client{Timeout: 20 * time.Second}
