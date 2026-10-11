@@ -8,17 +8,21 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
+	"log"
 	"time"
+        "github.com/joho/godotenv"
 )
 
 const identityURL = "https://health.googleapis.com/v4/users/me/identity"
 
 func main() {
-	token := strings.TrimSpace(os.Getenv("GOOGLE_HEALTH_ACCESS_TOKEN"))
+	if err := godotenv.Load(); err != nil {
+		log.Fatal("не удалось загрузить .env: ", err)
+	}
+
+	token := os.Getenv("GOOGLE_HEALTH_ACCESS_TOKEN")
 	if token == "" {
-		fmt.Fprintln(os.Stderr, "Missing GOOGLE_HEALTH_ACCESS_TOKEN")
-		os.Exit(1)
+		log.Fatal("GOOGLE_HEALTH_ACCESS_TOKEN не задан")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
