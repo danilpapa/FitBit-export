@@ -9,10 +9,8 @@ import (
 	"time"
 
 	"fitbit-export/internal/config"
-	"fitbit-export/internal/exporter"
-	"fitbit-export/internal/healthapi"
+	"fitbit-export/internal/googlehealth"
 	"fitbit-export/internal/httpclient"
-	"fitbit-export/internal/oauth"
 )
 
 func main() {
@@ -23,17 +21,7 @@ func main() {
 	)
 	defer stop()
 
-	cfg := config.Load()
-	
-	oauthConfig := oauth.Config{
-		ClientID:     cfg.ClientID,
-		ClientSecret: cfg.ClientSecret,
-		RefreshToken: cfg.RefreshToken,
-	}
-
-	http := httpclient.New(oauthConfig)
-	api := healthapi.New(http)
-	service := exporter.New(api)
+	client := googlehealth.New(httpclient.New(config.Load()))
 
 	end := time.Now()
 	start := time.Date(
@@ -47,10 +35,10 @@ func main() {
 		end.Location(),
 	)
 
-	result, err := service.Run(ctx, start, end)
+	result, err := client.Steps(ctx, start, end)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	log.Printf("Steps total: %d", result.StepsTotal)
+	log.Printf("Steps total: %d", result.Total)
 }
