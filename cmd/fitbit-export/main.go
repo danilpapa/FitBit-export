@@ -13,7 +13,6 @@ import (
 	"fitbit-export/internal/healthapi"
 	"fitbit-export/internal/httpclient"
 	"fitbit-export/internal/oauth"
-	"fitbit-export/internal/output"
 )
 
 func main() {
@@ -36,21 +35,22 @@ func main() {
 	api := healthapi.New(http)
 	service := exporter.New(api)
 
-	end := time.Now().UTC()
-	start := end.Add(-24 * time.Hour)
-
-	log.Printf("Exporting data from %s to %s", start, end)
+	end := time.Now()
+	start := time.Date(
+		end.Year(),
+		end.Month(),
+		end.Day(),
+		0,
+		0,
+		0,
+		0,
+		end.Location(),
+	)
 
 	result, err := service.Run(ctx, start, end)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	path, err := output.SaveJSON(cfg.OutputDir, result)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Printf("Report saved: %s", path)
-	log.Printf("Steps data points: %d", len(result.Steps))
+	log.Printf("Steps total: %d", result.StepsTotal)
 }

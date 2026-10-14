@@ -1,11 +1,11 @@
 package healthapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"time"
 
 	"fitbit-export/internal/httpclient"
@@ -26,73 +26,53 @@ func (c *Client) ListSteps(
 	start time.Time,
 	end time.Time,
 ) ([]json.RawMessage, error) {
-	filter := fmt.Sprintf(
-		`steps.interval.start_time >= "%s" AND steps.interval.start_time < "%s"`,
-		start.UTC().Format(time.RFC3339),
-		end.UTC().Format(time.RFC3339),
-	)
-
-	var all []json.RawMessage
-	pageToken := ""
-
-	for {
-		u, err := url.Parse(
-			baseURL + "/users/me/dataTypes/steps/dataPoints",
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		query := u.Query()
-		query.Set("pageSize", "10000")
-		query.Set("filter", filter)
-
-		if pageToken != "" {
-			query.Set("pageToken", pageToken)
-		}
-
-		u.RawQuery = query.Encode()
-
-		req, err := http.NewRequestWithContext(
-			ctx,
-			http.MethodGet,
-			u.String(),
-			nil,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("create steps request: %w", err)
-		}
-
-		resp, err := c.http.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("get steps: %w", err)
-		}
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			resp.Body.Close()
-			return nil, fmt.Errorf("Google Health API returned HTTP %d", resp.StatusCode)
-		}
-
-		var page struct {
-			DataPoints    []json.RawMessage `json:"dataPoints"`
-			NextPageToken string            `json:"nextPageToken"`
-		}
-
-		err = json.NewDecoder(resp.Body).Decode(&page)
-		resp.Body.Close()
-
-		if err != nil {
-			return nil, fmt.Errorf("decode steps response: %w", err)
-		}
-
-		all = append(all, page.DataPoints...)
-
-		if page.NextPageToken == "" {
-			break
-		}
-
-		pageToken = page.NextPageToken
+	body, err := json.Marshal(struct {
+		Range struct {
+			StartTime string `json:"startTime"`
+			EndTime   string `json:"endTime"`
+		} `json:"range"`
+		WindowSize string `json:"windowSize"`
+	}{
+		Range: struct {
+			StartTime string `json:"startTime"`
+			EndTime   string `json:"endTime"`
+		}{
+			StartTime: start.UTC().Format(time.RFC3339Nano),
+			EndTime:   end.UTC().Format(time.RFC3339Nano),
+		},
+		WindowSize: "86400s",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode steps rollup request: %w", err)
 	}
 
-	return all, nil
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		baseURL+"/users/me/dataTypes/steps/dataPoints:rollUp",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create steps rollup request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("roll up steps: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("Google Health API returned HTTP %d", resp.StatusCode)
+	}
+
+	var result struct {
+		RollupDataPoints []json.RawMessage `json:"rollupDataPoints"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode steps rollup response: %w", err)
+	}
+
+	return result.RollupDataPoints, nil
 }

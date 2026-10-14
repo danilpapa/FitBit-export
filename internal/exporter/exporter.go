@@ -31,6 +31,11 @@ func (e *Exporter) Run(
 		return report.Report{}, fmt.Errorf("export steps: %w", err)
 	}
 
+	stepsTotal, err := report.Total(steps)
+	if err != nil {
+		return report.Report{}, fmt.Errorf("calculate total steps: %w", err)
+	}
+
 	return report.Report{
 		GeneratedAt: time.Now(),
 		Period: report.Period{
@@ -38,5 +43,6 @@ func (e *Exporter) Run(
 			End:   end,
 		},
 		Steps: steps,
+		StepsTotal: stepsTotal,
 	}, nil
 }

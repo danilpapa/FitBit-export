@@ -9,6 +9,7 @@ type Report struct {
 	GeneratedAt time.Time         `json:"generatedAt"`
 	Period      Period            `json:"period"`
 	Steps       []json.RawMessage `json:"steps"`
+	StepsTotal  int64             `json:"stepsTotal"`
 }
 
 type Period struct {
