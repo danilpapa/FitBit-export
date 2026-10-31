@@ -163,12 +163,11 @@ func TestRefreshRetriesTokenRequest(t *testing.T) {
 	client.tokenURL = tokens.URL
 	client.baseDelay = time.Millisecond
 
-	token, err := client.refreshAccessToken(context.Background())
-	if err != nil {
+	if err := client.refreshAccessToken(context.Background()); err != nil {
 		t.Fatalf("refreshAccessToken() error = %v", err)
 	}
-	if token != "fresh" || calls.Load() != 2 {
-		t.Fatalf("token = %q after %d calls", token, calls.Load())
+	if client.accessToken != "fresh" || calls.Load() != 2 {
+		t.Fatalf("token = %q after %d calls", client.accessToken, calls.Load())
 	}
 }
 
@@ -183,7 +182,7 @@ func TestRefreshDoesNotRetryRevokedToken(t *testing.T) {
 	client := New(testConfig())
 	client.tokenURL = tokens.URL
 
-	if _, err := client.refreshAccessToken(context.Background()); err == nil {
+	if err := client.refreshAccessToken(context.Background()); err == nil {
 		t.Fatal("refreshAccessToken() error = nil, want HTTP 400")
 	}
 	if calls.Load() != 1 {

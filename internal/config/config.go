@@ -30,7 +30,6 @@ func Load() Config {
 	}
 }
 
-// SaveRefreshToken stores the token in .env and leaves other lines untouched.
 func SaveRefreshToken(token string) error {
 	return saveEnvValue(envFile, refreshTokenKey, token)
 }
@@ -66,6 +65,5 @@ func saveEnvValue(path string, key string, value string) error {
 		os.Remove(temp)
 		return fmt.Errorf("replace %s: %w", path, err)
 	}
-
 	return nil
 }

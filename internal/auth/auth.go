@@ -19,16 +19,14 @@ import (
 	"time"
 
 	"fitbit-export/internal/config"
+	"fitbit-export/internal/httpclient"
 )
 
 const (
 	authorizeURL = "https://accounts.google.com/o/oauth2/v2/auth"
-	tokenURL     = "https://oauth2.googleapis.com/token"
+	redirectURL  = "http://localhost:8085/callback"
 	listenAddr   = "127.0.0.1:8085"
 	loginTimeout = 5 * time.Minute
-
-	// RedirectURL must be listed in the OAuth client's Authorized redirect URIs.
-	RedirectURL = "http://localhost:8085/callback"
 )
 
 var scopes = []string{
@@ -49,7 +47,11 @@ type flow struct {
 	open         func(target string) error
 }
 
-// Login runs the browser consent flow and returns a new refresh token.
+type callback struct {
+	code string
+	err  error
+}
+
 func Login(ctx context.Context, cfg config.Config) (Result, error) {
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -58,8 +60,8 @@ func Login(ctx context.Context, cfg config.Config) (Result, error) {
 
 	f := flow{
 		authorizeURL: authorizeURL,
-		tokenURL:     tokenURL,
-		redirectURL:  RedirectURL,
+		tokenURL:     httpclient.TokenURL,
+		redirectURL:  redirectURL,
 		open:         openBrowser,
 	}
 	return f.run(ctx, cfg, listener)
@@ -118,11 +120,6 @@ func (f flow) loginURL(cfg config.Config, state string, verifier string) string 
 	return f.authorizeURL + "?" + query.Encode()
 }
 
-type callback struct {
-	code string
-	err  error
-}
-
 func callbackHandler(state string, callbacks chan<- callback) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
@@ -132,15 +129,10 @@ func callbackHandler(state string, callbacks chan<- callback) http.Handler {
 			return
 		}
 
-		result := callback{code: query.Get("code")}
-		switch {
-		case query.Get("error") != "":
-			result = callback{err: fmt.Errorf("authorization denied: %s", query.Get("error"))}
+		result := parseCallback(query)
+		if result.err != nil {
 			http.Error(w, "Authorization failed. Return to the terminal.", http.StatusBadRequest)
-		case result.code == "":
-			result = callback{err: errors.New("OAuth callback has no code")}
-			http.Error(w, "Authorization failed. Return to the terminal.", http.StatusBadRequest)
-		default:
+		} else {
 			fmt.Fprintln(w, "Authorization received. Return to the terminal.")
 		}
 
@@ -152,34 +144,25 @@ func callbackHandler(state string, callbacks chan<- callback) http.Handler {
 	return mux
 }
 
-func (f flow) exchange(
-	ctx context.Context,
-	cfg config.Config,
-	code string,
-	verifier string,
-) (Result, error) {
-	form := url.Values{
+func parseCallback(query url.Values) callback {
+	if reason := query.Get("error"); reason != "" {
+		return callback{err: fmt.Errorf("authorization denied: %s", reason)}
+	}
+	if code := query.Get("code"); code != "" {
+		return callback{code: code}
+	}
+	return callback{err: errors.New("OAuth callback has no code")}
+}
+
+func (f flow) exchange(ctx context.Context, cfg config.Config, code string, verifier string) (Result, error) {
+	response, err := httpclient.New(cfg).PostForm(ctx, f.tokenURL, url.Values{
 		"client_id":     {cfg.ClientID},
 		"client_secret": {cfg.ClientSecret},
 		"code":          {code},
 		"code_verifier": {verifier},
 		"grant_type":    {"authorization_code"},
 		"redirect_uri":  {f.redirectURL},
-	}
-
-	request, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		f.tokenURL,
-		strings.NewReader(form.Encode()),
-	)
-	if err != nil {
-		return Result{}, fmt.Errorf("create OAuth request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	response, err := client.Do(request)
+	})
 	if err != nil {
 		return Result{}, fmt.Errorf("send OAuth request: %w", err)
 	}

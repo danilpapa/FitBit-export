@@ -2,42 +2,37 @@ package report
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
 const (
-	dayFormat  = "02.01"
-	missing    = "—"
-	rowFormat  = "%-22s %9s %13s %13s\n"
-	sectionGap = "\n"
+	dayLayout = "02.01"
+	missing   = "—"
+	rowFormat = "%-22s %9s %13s %13s\n"
 )
 
-// Render formats the report as plain text for one reader per day.
 func Render(r Report) string {
 	var text strings.Builder
 
 	fmt.Fprintf(&text, "Отчёт за %s на %s\n", r.Day.Format("02.01.2006"), r.GeneratedAt.Format("15:04"))
-	fmt.Fprintf(&text, "Нагрузка с 00:00 до этого времени, сон и восстановление за ночь на %s\n",
-		r.Day.Format(dayFormat))
+	fmt.Fprintf(&text, "Нагрузка с 00:00 до этого времени, сон и восстановление за ночь на %s\n", r.Day.Format(dayLayout))
 
 	renderRows(&text, "ВОССТАНОВЛЕНИЕ", r.Recovery)
 
-	title := "СОН"
+	sleepTitle := "СОН"
 	if !r.SleepStart.IsZero() {
-		title = fmt.Sprintf("СОН %s–%s", r.SleepStart.Format("15:04"), r.SleepEnd.Format("15:04"))
+		sleepTitle = fmt.Sprintf("СОН %s–%s", r.SleepStart.Format("15:04"), r.SleepEnd.Format("15:04"))
 	}
-	renderRows(&text, title, r.Sleep)
+	renderRows(&text, sleepTitle, r.Sleep)
 
 	renderRows(&text, "НАГРУЗКА", r.Activity)
 	renderWorkouts(&text, r)
 
-	text.WriteString(sectionGap)
 	note := r.Note
 	if note == "" {
 		note = "нет заметки"
 	}
-	fmt.Fprintf(&text, "Самочувствие: %s\n", note)
+	fmt.Fprintf(&text, "\nСамочувствие: %s\n", note)
 
 	if len(r.Unavailable) > 0 {
 		fmt.Fprintf(&text, "Не удалось получить: %s\n", strings.Join(r.Unavailable, ", "))
@@ -47,8 +42,7 @@ func Render(r Report) string {
 }
 
 func renderRows(text *strings.Builder, title string, rows []Row) {
-	text.WriteString(sectionGap)
-	fmt.Fprintf(text, rowFormat, title, "сегодня", "ср. 7 дн.", "ср. 28 дн.")
+	fmt.Fprintf(text, "\n"+rowFormat, title, "сегодня", "ср. 7 дн.", "ср. 28 дн.")
 	for _, row := range rows {
 		fmt.Fprintf(text, rowFormat,
 			row.Label,
@@ -60,15 +54,14 @@ func renderRows(text *strings.Builder, title string, rows []Row) {
 }
 
 func renderWorkouts(text *strings.Builder, r Report) {
-	text.WriteString(sectionGap)
-	fmt.Fprintf(text, "Тренировки за %s:", r.Day.Format(dayFormat))
+	fmt.Fprintf(text, "\nТренировки за %s:", r.Day.Format(dayLayout))
 	if len(r.Workouts) == 0 {
-		fmt.Fprintf(text, " нет\n")
-	} else {
-		text.WriteString("\n")
-		for _, workout := range r.Workouts {
-			fmt.Fprintf(text, "  %s\n", formatWorkout(workout))
-		}
+		text.WriteString(" нет")
+	}
+	text.WriteString("\n")
+
+	for _, workout := range r.Workouts {
+		fmt.Fprintf(text, "  %s\n", formatWorkout(workout))
 	}
 	fmt.Fprintf(text, "За 7 дн.: %d, %.0f мин. За 28 дн.: %d, %.0f мин\n",
 		r.WeekTotal.Count, r.WeekTotal.Minutes, r.MonthTotal.Count, r.MonthTotal.Minutes)
@@ -89,16 +82,15 @@ func formatValue(value *float64, digits int) string {
 	if value == nil {
 		return missing
 	}
-	return strconv.FormatFloat(*value, 'f', digits, 64)
+	return fmt.Sprintf("%.*f", digits, *value)
 }
 
-// formatAverage flags averages built from less than half of their window.
 func formatAverage(average Average, digits int) string {
 	if average.Days == 0 {
 		return missing
 	}
 
-	text := strconv.FormatFloat(average.Value, 'f', digits, 64)
+	text := fmt.Sprintf("%.*f", digits, average.Value)
 	if average.Days*2 < average.Window {
 		return fmt.Sprintf("%s (%d дн.)", text, average.Days)
 	}

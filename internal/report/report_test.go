@@ -122,7 +122,6 @@ func TestBuildJustAfterMidnightUsesNewDay(t *testing.T) {
 }
 
 func TestDeviceNowUsesZoneOfNewestPoint(t *testing.T) {
-	// 22:01 UTC is still October 31 here but already November 1 on a UTC+3 band.
 	now := time.Date(2026, time.October, 31, 22, 1, 0, 0, time.UTC)
 	step := `{"steps":{"interval":{"startTime":"%s","startUtcOffset":"%s"}}}`
 
@@ -246,8 +245,8 @@ func TestBuildListsUnavailableMetrics(t *testing.T) {
 	if !strings.Contains(text, "Не удалось получить: Дыхание, вд/мин, Сон") {
 		t.Fatalf("Render() =\n%s", text)
 	}
-	if len(report.Sleep) != len(sleepLabels) {
-		t.Fatalf("Sleep rows = %d, want %d", len(report.Sleep), len(sleepLabels))
+	if len(report.Sleep) != len(sleepMetrics) {
+		t.Fatalf("Sleep rows = %d, want %d", len(report.Sleep), len(sleepMetrics))
 	}
 }
 
