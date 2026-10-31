@@ -7,44 +7,27 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"time"
 
 	"fitbit-export/internal/httpclient"
 )
 
-const baseURL = "https://health.googleapis.com/v4"
+const (
+	baseURL            = "https://health.googleapis.com/v4"
+	maxRollupPageSize  = 90
+	dailyRollupWindows = 1
+)
 
 type Client struct {
 	http *httpclient.Client
-}
-
-type StepsReport struct {
-	Start time.Time
-	End   time.Time
-	Total int64
 }
 
 func New(http *httpclient.Client) *Client {
 	return &Client{http: http}
 }
 
-func (c *Client) Steps(ctx context.Context, start time.Time, end time.Time) (StepsReport, error) {
-	points, err := c.RollUp(ctx, "steps", start, end)
-	if err != nil {
-		return StepsReport{}, fmt.Errorf("get steps: %w", err)
-	}
-
-	total, err := totalSteps(points)
-	if err != nil {
-		return StepsReport{}, err
-	}
-
-	return StepsReport{Start: start, End: end, Total: total}, nil
-}
-
-// RollUp returns reconciled aggregate values for one metric in a time range.
-func (c *Client) RollUp(
+// DailyRollUp returns one aggregate per civil day in the closed-open range.
+func (c *Client) DailyRollUp(
 	ctx context.Context,
 	dataType string,
 	start time.Time,
@@ -54,13 +37,7 @@ func (c *Client) RollUp(
 		return nil, fmt.Errorf("start must be before end")
 	}
 
-	body, err := json.Marshal(rollupRequest{
-		Range: timeRange{
-			StartTime: start.UTC().Format(time.RFC3339Nano),
-			EndTime:   end.UTC().Format(time.RFC3339Nano),
-		},
-		WindowSize: "86400s",
-	})
+	body, err := json.Marshal(newDailyRollupRequest(start, end))
 	if err != nil {
 		return nil, fmt.Errorf("encode %s rollup request: %w", dataType, err)
 	}
@@ -68,7 +45,7 @@ func (c *Client) RollUp(
 	request, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		baseURL+"/users/me/dataTypes/"+dataType+"/dataPoints:rollUp",
+		baseURL+"/users/me/dataTypes/"+dataType+"/dataPoints:dailyRollUp",
 		bytes.NewReader(body),
 	)
 	if err != nil {
@@ -152,38 +129,35 @@ func (c *Client) List(
 	}
 }
 
-func totalSteps(points []json.RawMessage) (int64, error) {
-	var total int64
-
-	for _, raw := range points {
-		var point struct {
-			Steps *struct {
-				CountSum string `json:"countSum"`
-			} `json:"steps"`
-		}
-		if err := json.Unmarshal(raw, &point); err != nil {
-			return 0, fmt.Errorf("decode steps rollup point: %w", err)
-		}
-		if point.Steps == nil {
-			continue
-		}
-
-		count, err := strconv.ParseInt(point.Steps.CountSum, 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("parse steps count: %w", err)
-		}
-		total += count
+func newDailyRollupRequest(start time.Time, end time.Time) dailyRollupRequest {
+	return dailyRollupRequest{
+		Range:          civilRange{Start: newCivilTime(start), End: newCivilTime(end)},
+		WindowSizeDays: dailyRollupWindows,
+		PageSize:       maxRollupPageSize,
 	}
-
-	return total, nil
 }
 
-type rollupRequest struct {
-	Range      timeRange `json:"range"`
-	WindowSize string    `json:"windowSize"`
+func newCivilTime(day time.Time) civilTime {
+	return civilTime{Date: civilDate{Year: day.Year(), Month: int(day.Month()), Day: day.Day()}}
 }
 
-type timeRange struct {
-	StartTime string `json:"startTime"`
-	EndTime   string `json:"endTime"`
+type dailyRollupRequest struct {
+	Range          civilRange `json:"range"`
+	WindowSizeDays int        `json:"windowSizeDays"`
+	PageSize       int        `json:"pageSize"`
+}
+
+type civilRange struct {
+	Start civilTime `json:"start"`
+	End   civilTime `json:"end"`
+}
+
+type civilTime struct {
+	Date civilDate `json:"date"`
+}
+
+type civilDate struct {
+	Year  int `json:"year"`
+	Month int `json:"month"`
+	Day   int `json:"day"`
 }
