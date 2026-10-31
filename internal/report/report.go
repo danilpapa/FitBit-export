@@ -5,70 +5,86 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 )
 
 const (
-	weekDays  = 7
-	monthDays = 28
+	weekDays = 7
 
-	zoneLookback    = 48 * time.Hour
+	clockLookback   = 48 * time.Hour
 	civilTimeLayout = "2006-01-02T15:04:05"
 
 	secondsToHours  = 1.0 / 3600
 	minutesToHours  = 1.0 / 60
 	millimetersToKm = 1.0 / 1_000_000
+
+	secondsPerMeterToMinPerKm = 1000.0 / 60
 )
 
 type Source interface {
 	List(ctx context.Context, dataType string, filter string) ([]json.RawMessage, error)
+	Latest(ctx context.Context, dataType string, filter string) (json.RawMessage, error)
 	DailyRollUp(ctx context.Context, dataType string, start time.Time, end time.Time) ([]json.RawMessage, error)
 }
 
+type Clock struct {
+	Now      time.Time
+	LastData *time.Time
+}
+
 type Report struct {
-	Day         time.Time
-	GeneratedAt time.Time
-	Recovery    []Row
-	SleepStart  time.Time
-	SleepEnd    time.Time
-	Sleep       []Row
-	Activity    []Row
-	Workouts    []Workout
-	WeekTotal   WorkoutTotal
-	MonthTotal  WorkoutTotal
-	Note        string
-	Unavailable []string
+	Date          string            `json:"date"`
+	GeneratedAt   time.Time         `json:"generated_at"`
+	LastDataAt    *time.Time        `json:"last_data_at"`
+	Unavailable   []string          `json:"unavailable"`
+	LastNight     LastNight         `json:"last_night"`
+	Recovery      map[string]Metric `json:"recovery_last_night"`
+	Activity      map[string]Metric `json:"activity_today"`
+	WorkoutsToday []Workout         `json:"workouts_today"`
+	Note          *string           `json:"note"`
 }
 
-type Row struct {
-	Label  string
-	Digits int
-	Value  *float64
-	Week   Average
-	Month  Average
+type LastNight struct {
+	StartedAt    *time.Time `json:"started_at"`
+	EndedAt      *time.Time `json:"ended_at"`
+	AsleepHours  Metric     `json:"asleep_hours"`
+	DeepMinutes  Metric     `json:"deep_minutes"`
+	RemMinutes   Metric     `json:"rem_minutes"`
+	AwakeMinutes Metric     `json:"awake_minutes"`
 }
 
-type Average struct {
-	Value  float64
-	Days   int
-	Window int
+type Metric struct {
+	Value *float64 `json:"value"`
+	Avg7d *float64 `json:"avg_7d"`
 }
 
 type Workout struct {
-	Name       string
-	Minutes    float64
-	Kilometers float64
-	HeartRate  int64
+	Name              string         `json:"name"`
+	Type              string         `json:"type"`
+	StartedAt         time.Time      `json:"started_at"`
+	EndedAt           time.Time      `json:"ended_at"`
+	Minutes           float64        `json:"minutes"`
+	CaloriesKcal      float64        `json:"calories_kcal,omitempty"`
+	Steps             int64          `json:"steps,omitempty"`
+	DistanceKm        float64        `json:"distance_km,omitempty"`
+	AvgPaceMinPerKm   float64        `json:"avg_pace_min_per_km,omitempty"`
+	AvgHRBpm          int64          `json:"avg_hr_bpm,omitempty"`
+	ActiveZoneMinutes int64          `json:"active_zone_minutes,omitempty"`
+	HRZoneMinutes     *HRZoneMinutes `json:"hr_zone_minutes,omitempty"`
+	Notes             string         `json:"notes,omitempty"`
 }
 
-type WorkoutTotal struct {
-	Count   int
-	Minutes float64
+type HRZoneMinutes struct {
+	Light    float64 `json:"light"`
+	Moderate float64 `json:"moderate"`
+	Vigorous float64 `json:"vigorous"`
+	Peak     float64 `json:"peak"`
 }
 
 type metric struct {
-	label       string
+	key         string
 	digits      int
 	dataType    string
 	group       string
@@ -79,31 +95,19 @@ type metric struct {
 }
 
 var recoveryMetrics = []metric{
-	{label: "Пульс покоя, уд/мин", dataType: "daily-resting-heart-rate", group: "dailyRestingHeartRate", fields: []string{"beatsPerMinute"}},
-	{label: "HRV, мс", digits: 1, dataType: "daily-heart-rate-variability", group: "dailyHeartRateVariability", fields: []string{"averageHeartRateVariabilityMilliseconds"}},
-	{label: "Дыхание, вд/мин", digits: 1, dataType: "daily-respiratory-rate", group: "dailyRespiratoryRate", fields: []string{"breathsPerMinute"}},
-	{label: "Температура сна, °C", digits: 2, dataType: "daily-sleep-temperature-derivations", group: "dailySleepTemperatureDerivations", fields: []string{"nightlyTemperatureCelsius"}},
-	{label: "SpO2, %", digits: 1, dataType: "daily-oxygen-saturation", group: "dailyOxygenSaturation", fields: []string{"averagePercentage"}},
+	{key: "resting_hr_bpm", dataType: "daily-resting-heart-rate", group: "dailyRestingHeartRate", fields: []string{"beatsPerMinute"}},
+	{key: "hrv_ms", digits: 1, dataType: "daily-heart-rate-variability", group: "dailyHeartRateVariability", fields: []string{"averageHeartRateVariabilityMilliseconds"}},
+	{key: "breaths_per_minute", digits: 1, dataType: "daily-respiratory-rate", group: "dailyRespiratoryRate", fields: []string{"breathsPerMinute"}},
+	{key: "sleep_temperature_celsius", digits: 2, dataType: "daily-sleep-temperature-derivations", group: "dailySleepTemperatureDerivations", fields: []string{"nightlyTemperatureCelsius"}},
+	{key: "spo2_percent", digits: 1, dataType: "daily-oxygen-saturation", group: "dailyOxygenSaturation", fields: []string{"averagePercentage"}},
 }
 
 var activityMetrics = []metric{
-	{label: "Шаги", dataType: "steps", group: "steps", fields: []string{"countSum"}, rollup: true},
-	{label: "Дистанция, км", digits: 1, dataType: "distance", group: "distance", fields: []string{"millimetersSum"}, scale: millimetersToKm, rollup: true},
-	{label: "Зоны нагрузки, мин", dataType: "active-zone-minutes", group: "activeZoneMinutes", fields: []string{"sumInFatBurnHeartZone", "sumInCardioHeartZone", "sumInPeakHeartZone"}, rollup: true, fillMissing: true},
-	{label: "Без движения, ч", digits: 1, dataType: "sedentary-period", group: "sedentaryPeriod", fields: []string{"durationSum"}, scale: secondsToHours, rollup: true},
-	{label: "VO2 max", digits: 1, dataType: "daily-vo2-max", group: "dailyVo2Max", fields: []string{"vo2Max"}},
-}
-
-var sleepMetrics = []struct {
-	label  string
-	digits int
-	key    string
-	scale  float64
-}{
-	{label: "Сон всего, ч", digits: 1, key: minutesAsleep, scale: minutesToHours},
-	{label: "Глубокий, мин", key: "DEEP", scale: 1},
-	{label: "REM, мин", key: "REM", scale: 1},
-	{label: "Пробуждения, мин", key: minutesAwake, scale: 1},
+	{key: "steps", dataType: "steps", group: "steps", fields: []string{"countSum"}, rollup: true},
+	{key: "distance_km", digits: 1, dataType: "distance", group: "distance", fields: []string{"millimetersSum"}, scale: millimetersToKm, rollup: true},
+	{key: "active_zone_minutes", dataType: "active-zone-minutes", group: "activeZoneMinutes", fields: []string{"sumInFatBurnHeartZone", "sumInCardioHeartZone", "sumInPeakHeartZone"}, rollup: true, fillMissing: true},
+	{key: "sedentary_hours", digits: 1, dataType: "sedentary-period", group: "sedentaryPeriod", fields: []string{"durationSum"}, scale: secondsToHours, rollup: true},
+	{key: "vo2_max", digits: 1, dataType: "daily-vo2-max", group: "dailyVo2Max", fields: []string{"vo2Max"}},
 }
 
 type builder struct {
@@ -116,44 +120,51 @@ type builder struct {
 	err    error
 }
 
-func DeviceNow(ctx context.Context, source Source, now time.Time) time.Time {
-	points, err := source.List(ctx, "steps", fmt.Sprintf(
-		`steps.interval.start_time >= "%s"`,
-		now.Add(-zoneLookback).UTC().Format(time.RFC3339),
+func DeviceClock(ctx context.Context, source Source, now time.Time) Clock {
+	clock := Clock{Now: now}
+
+	point, err := source.Latest(ctx, "heart-rate", fmt.Sprintf(
+		`heart_rate.sample_time.physical_time >= "%s"`,
+		now.Add(-clockLookback).UTC().Format(time.RFC3339),
 	))
 	if err != nil {
-		log.Printf("device time zone: unavailable: %v", err)
-		return now
+		log.Printf("device clock: unavailable: %v", err)
+		return clock
+	}
+	if point == nil {
+		return clock
 	}
 
-	latest, err := latestStepStart(points)
+	latest, err := heartRateTime(point)
 	if err != nil {
-		log.Printf("device time zone: %v", err)
-		return now
+		log.Printf("device clock: %v", err)
+		return clock
 	}
-	if latest.IsZero() {
-		return now
-	}
-	return now.In(latest.Location())
+
+	clock.Now = now.In(latest.Location())
+	clock.LastData = &latest
+	return clock
 }
 
-func Build(ctx context.Context, source Source, now time.Time) (Report, error) {
+func Build(ctx context.Context, source Source, clock Clock) (Report, error) {
+	now := clock.Now
 	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	b := &builder{
 		source: source,
 		day:    day,
-		start:  day.AddDate(0, 0, -monthDays),
+		start:  day.AddDate(0, 0, -weekDays),
 		end:    day.AddDate(0, 0, 1),
-		report: Report{Day: day, GeneratedAt: now},
+		report: Report{
+			Date:        dateKey(day),
+			GeneratedAt: now.Truncate(time.Second),
+			LastDataAt:  clock.LastData,
+			Unavailable: []string{},
+		},
 	}
 
-	for _, m := range recoveryMetrics {
-		b.report.Recovery = append(b.report.Recovery, b.row(ctx, m))
-	}
+	b.report.Recovery = b.metrics(ctx, recoveryMetrics)
 	b.addSleep(ctx)
-	for _, m := range activityMetrics {
-		b.report.Activity = append(b.report.Activity, b.row(ctx, m))
-	}
+	b.report.Activity = b.metrics(ctx, activityMetrics)
 	b.addWorkouts(ctx)
 
 	if !b.loaded {
@@ -164,28 +175,35 @@ func Build(ctx context.Context, source Source, now time.Time) (Report, error) {
 	if err != nil {
 		log.Printf("note: unavailable: %v", err)
 	}
-	b.report.Note = note
+	if note != "" {
+		b.report.Note = &note
+	}
 
 	return b.report, nil
 }
 
-func (b *builder) attempt(label string, load func() error) {
+func (b *builder) attempt(key string, load func() error) bool {
 	if err := load(); err != nil {
-		log.Printf("%s: unavailable: %v", label, err)
-		b.report.Unavailable = append(b.report.Unavailable, label)
+		log.Printf("%s: unavailable: %v", key, err)
+		b.report.Unavailable = append(b.report.Unavailable, key)
 		b.err = err
-		return
+		return false
 	}
 	b.loaded = true
+	return true
 }
 
-func (b *builder) row(ctx context.Context, m metric) Row {
-	var series map[string]float64
-	b.attempt(m.label, func() (err error) {
-		series, err = b.series(ctx, m)
-		return err
-	})
-	return newRow(m.label, m.digits, series, b.day)
+func (b *builder) metrics(ctx context.Context, metrics []metric) map[string]Metric {
+	result := make(map[string]Metric, len(metrics))
+	for _, m := range metrics {
+		var series map[string]float64
+		b.attempt(m.key, func() (err error) {
+			series, err = b.series(ctx, m)
+			return err
+		})
+		result[m.key] = newMetric(series, b.day, m.digits)
+	}
+	return result
 }
 
 func (b *builder) series(ctx context.Context, m metric) (map[string]float64, error) {
@@ -218,7 +236,7 @@ func (b *builder) series(ctx context.Context, m metric) (map[string]float64, err
 
 func (b *builder) addSleep(ctx context.Context) {
 	var nights map[string]night
-	b.attempt("Сон", func() error {
+	b.attempt("sleep", func() error {
 		points, err := b.source.List(ctx, "sleep", fmt.Sprintf(
 			`sleep.interval.end_time >= "%s" AND sleep.interval.end_time < "%s"`,
 			b.start.UTC().Format(time.RFC3339), b.end.UTC().Format(time.RFC3339),
@@ -230,86 +248,71 @@ func (b *builder) addSleep(ctx context.Context) {
 		return err
 	})
 
-	if last, ok := nights[dateKey(b.day)]; ok {
-		b.report.SleepStart = last.start
-		b.report.SleepEnd = last.end
+	b.report.LastNight = LastNight{
+		AsleepHours:  b.nightMetric(nights, minutesAsleep, minutesToHours, 1),
+		DeepMinutes:  b.nightMetric(nights, "DEEP", 1, 0),
+		RemMinutes:   b.nightMetric(nights, "REM", 1, 0),
+		AwakeMinutes: b.nightMetric(nights, minutesAwake, 1, 0),
 	}
-
-	for _, m := range sleepMetrics {
-		series := map[string]float64{}
-		for date, n := range nights {
-			if minutes, ok := n.minutes[m.key]; ok {
-				series[date] = minutes * m.scale
-			}
-		}
-		b.report.Sleep = append(b.report.Sleep, newRow(m.label, m.digits, series, b.day))
+	if last, ok := nights[dateKey(b.day)]; ok {
+		b.report.LastNight.StartedAt = &last.start
+		b.report.LastNight.EndedAt = &last.end
 	}
 }
 
+func (b *builder) nightMetric(nights map[string]night, key string, scale float64, digits int) Metric {
+	series := map[string]float64{}
+	for date, n := range nights {
+		if minutes, ok := n.minutes[key]; ok {
+			series[date] = minutes * scale
+		}
+	}
+	return newMetric(series, b.day, digits)
+}
+
 func (b *builder) addWorkouts(ctx context.Context) {
-	var byDay map[string][]Workout
-	b.attempt("Тренировки", func() error {
+	b.attempt("workouts", func() error {
 		points, err := b.source.List(ctx, "exercise", fmt.Sprintf(
 			`exercise.interval.civil_start_time >= "%s" AND exercise.interval.civil_start_time < "%s"`,
-			b.start.Format(civilTimeLayout), b.end.Format(civilTimeLayout),
+			b.day.Format(civilTimeLayout), b.end.Format(civilTimeLayout),
 		))
 		if err != nil {
 			return err
 		}
-		byDay, err = decodeWorkouts(points)
+		b.report.WorkoutsToday, err = decodeWorkouts(points)
 		return err
 	})
-
-	b.report.Workouts = byDay[dateKey(b.day)]
-	b.report.WeekTotal = workoutTotal(byDay, b.day, weekDays)
-	b.report.MonthTotal = workoutTotal(byDay, b.day, monthDays)
 }
 
-func workoutTotal(byDay map[string][]Workout, day time.Time, window int) WorkoutTotal {
-	var total WorkoutTotal
-	for _, date := range daysBefore(day, window) {
-		for _, workout := range byDay[date] {
-			total.Count++
-			total.Minutes += workout.Minutes
-		}
-	}
-	return total
-}
-
-func newRow(label string, digits int, series map[string]float64, day time.Time) Row {
-	row := Row{
-		Label:  label,
-		Digits: digits,
-		Week:   average(series, day, weekDays),
-		Month:  average(series, day, monthDays),
-	}
+func newMetric(series map[string]float64, day time.Time, digits int) Metric {
+	metric := Metric{Avg7d: average(series, day, digits)}
 	if value, ok := series[dateKey(day)]; ok {
-		row.Value = &value
+		rounded := round(value, digits)
+		metric.Value = &rounded
 	}
-	return row
+	return metric
 }
 
-func average(series map[string]float64, day time.Time, window int) Average {
-	result := Average{Window: window}
+func average(series map[string]float64, day time.Time, digits int) *float64 {
 	var sum float64
-	for _, date := range daysBefore(day, window) {
-		if value, ok := series[date]; ok {
+	days := 0
+	for i := 1; i <= weekDays; i++ {
+		if value, ok := series[dateKey(day.AddDate(0, 0, -i))]; ok {
 			sum += value
-			result.Days++
+			days++
 		}
 	}
-	if result.Days > 0 {
-		result.Value = sum / float64(result.Days)
+	if days == 0 {
+		return nil
 	}
-	return result
+
+	result := round(sum/float64(days), digits)
+	return &result
 }
 
-func daysBefore(day time.Time, count int) []string {
-	dates := make([]string, 0, count)
-	for i := 1; i <= count; i++ {
-		dates = append(dates, dateKey(day.AddDate(0, 0, -i)))
-	}
-	return dates
+func round(value float64, digits int) float64 {
+	scale := math.Pow10(digits)
+	return math.Round(value*scale) / scale
 }
 
 func dateKey(day time.Time) string {

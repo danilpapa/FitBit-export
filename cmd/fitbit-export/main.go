@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -39,17 +39,20 @@ func run(ctx context.Context, args []string) error {
 	}
 
 	client := googlehealth.New(httpclient.New(cfg))
-	now := report.DeviceNow(ctx, client, time.Now())
+	clock := report.DeviceClock(ctx, client, time.Now())
 	if command == "note" {
-		return runNote(now, args[1:])
+		return runNote(clock.Now, args[1:])
 	}
 
-	daily, err := report.Build(ctx, client, now)
+	daily, err := report.Build(ctx, client, clock)
 	if err != nil {
 		return err
 	}
-	fmt.Print(report.Render(daily))
-	return nil
+
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(daily)
 }
 
 func runAuth(ctx context.Context, cfg config.Config) error {

@@ -5,26 +5,42 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-var testNow = time.Date(2026, time.October, 31, 11, 0, 0, 0, time.UTC)
+var testNow = time.Date(2026, time.October, 31, 22, 30, 15, 500, time.UTC)
 
 type fakeSource struct {
 	lists     map[string][]string
+	latest    map[string]string
 	rollups   map[string][]string
 	failing   map[string]bool
 	failAll   bool
 	rollupEnd *time.Time
+	filters   map[string]string
 }
 
-func (f fakeSource) List(_ context.Context, dataType string, _ string) ([]json.RawMessage, error) {
+func (f fakeSource) List(_ context.Context, dataType string, filter string) ([]json.RawMessage, error) {
 	if f.failAll || f.failing[dataType] {
 		return nil, errors.New("HTTP 503")
 	}
+	if f.filters != nil {
+		f.filters[dataType] = filter
+	}
 	return raw(f.lists[dataType]), nil
+}
+
+func (f fakeSource) Latest(_ context.Context, dataType string, _ string) (json.RawMessage, error) {
+	if f.failAll || f.failing[dataType] {
+		return nil, errors.New("HTTP 503")
+	}
+	if point, ok := f.latest[dataType]; ok {
+		return json.RawMessage(point), nil
+	}
+	return nil, nil
 }
 
 func (f fakeSource) DailyRollUp(_ context.Context, dataType string, _ time.Time, end time.Time) ([]json.RawMessage, error) {
@@ -43,6 +59,17 @@ func raw(points []string) []json.RawMessage {
 		messages = append(messages, json.RawMessage(point))
 	}
 	return messages
+}
+
+func build(t *testing.T, source fakeSource, now time.Time) Report {
+	t.Helper()
+	t.Chdir(t.TempDir())
+
+	report, err := Build(context.Background(), source, Clock{Now: now})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	return report
 }
 
 func date(day int) string {
@@ -64,37 +91,36 @@ func sleepPoint(start string, end string, asleep int, main bool) string {
 		start, end, main, asleep)
 }
 
-func TestBuildComparesDayWithPreviousDays(t *testing.T) {
-	t.Chdir(t.TempDir())
+func heartRatePoint(physicalTime string, offset string) string {
+	return fmt.Sprintf(`{"heartRate":{"sampleTime":{"physicalTime":"%s","utcOffset":"%s"},"beatsPerMinute":"65"}}`, physicalTime, offset)
+}
 
+func TestBuildComparesDayWithPreviousDays(t *testing.T) {
 	var rollupEnd time.Time
-	report, err := Build(context.Background(), fakeSource{
+	report := build(t, fakeSource{
 		lists: map[string][]string{
 			"daily-resting-heart-rate": {restingPoint(31, 60), restingPoint(30, 50), restingPoint(29, 54)},
 		},
 		rollups: map[string][]string{
-			"steps": {stepsPoint(31, 800), stepsPoint(30, 3000), stepsPoint(10, 5000)},
+			"steps": {stepsPoint(31, 800), stepsPoint(30, 3000), stepsPoint(29, 5000), stepsPoint(10, 9000)},
 		},
 		rollupEnd: &rollupEnd,
 	}, testNow)
-	if err != nil {
-		t.Fatalf("Build() error = %v", err)
-	}
 
-	resting := report.Recovery[0]
+	resting := report.Recovery["resting_hr_bpm"]
 	if *resting.Value != 60 {
 		t.Fatalf("resting value = %v, want today's 60", *resting.Value)
 	}
-	if resting.Week.Value != 52 || resting.Week.Days != 2 {
-		t.Fatalf("resting week = %+v, want average of earlier days only", resting.Week)
+	if *resting.Avg7d != 52 {
+		t.Fatalf("resting week = %v, want earlier days only", *resting.Avg7d)
 	}
 
-	steps := report.Activity[0]
+	steps := report.Activity["steps"]
 	if *steps.Value != 800 {
 		t.Fatalf("steps value = %v, want today's 800", *steps.Value)
 	}
-	if steps.Week.Value != 3000 || steps.Month.Value != 4000 {
-		t.Fatalf("steps averages = %+v / %+v", steps.Week, steps.Month)
+	if *steps.Avg7d != 4000 {
+		t.Fatalf("steps week = %v, want 4000 without days outside the week", *steps.Avg7d)
 	}
 	if want := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC); !rollupEnd.Equal(want) {
 		t.Fatalf("rollup end = %v, want %v to include today", rollupEnd, want)
@@ -102,42 +128,205 @@ func TestBuildComparesDayWithPreviousDays(t *testing.T) {
 }
 
 func TestBuildJustAfterMidnightUsesNewDay(t *testing.T) {
-	t.Chdir(t.TempDir())
-
-	now := time.Date(2026, time.November, 1, 0, 1, 0, 0, time.UTC)
-	report, err := Build(context.Background(), fakeSource{
+	report := build(t, fakeSource{
 		rollups: map[string][]string{"steps": {stepsPoint(31, 6000)}},
-	}, now)
-	if err != nil {
-		t.Fatalf("Build() error = %v", err)
-	}
+	}, time.Date(2026, time.November, 1, 0, 1, 0, 0, time.UTC))
 
-	steps := report.Activity[0]
-	if steps.Value != nil {
+	if report.Date != "2026-11-01" {
+		t.Fatalf("Date = %s", report.Date)
+	}
+	if steps := report.Activity["steps"]; steps.Value != nil {
 		t.Fatalf("steps value = %v, want no data yet", *steps.Value)
 	}
-	if !strings.HasPrefix(Render(report), "Отчёт за 01.11.2026 на 00:01\n") {
-		t.Fatalf("Render() =\n%s", Render(report))
+}
+
+func TestBuildRoundsValues(t *testing.T) {
+	point := fmt.Sprintf(`{"dailyHeartRateVariability":{"date":%s,"averageHeartRateVariabilityMilliseconds":198.7512}}`, date(31))
+	report := build(t, fakeSource{
+		lists: map[string][]string{"daily-heart-rate-variability": {point}},
+	}, testNow)
+
+	if got := *report.Recovery["hrv_ms"].Value; got != 198.8 {
+		t.Fatalf("hrv = %v, want 198.8", got)
 	}
 }
 
-func TestDeviceNowUsesZoneOfNewestPoint(t *testing.T) {
-	now := time.Date(2026, time.October, 31, 22, 1, 0, 0, time.UTC)
-	step := `{"steps":{"interval":{"startTime":"%s","startUtcOffset":"%s"}}}`
+func TestBuildCountsMissingZoneDaysAsZero(t *testing.T) {
+	point := fmt.Sprintf(
+		`{"civilStartTime":{"date":%s,"time":{}},"activeZoneMinutes":{"sumInFatBurnHeartZone":"14","sumInCardioHeartZone":"7"}}`,
+		date(29),
+	)
+	report := build(t, fakeSource{
+		rollups: map[string][]string{"active-zone-minutes": {point}},
+	}, testNow)
 
-	device := DeviceNow(context.Background(), fakeSource{
-		lists: map[string][]string{"steps": {
-			fmt.Sprintf(step, "2026-10-31T21:50:00Z", "10800s"),
-			fmt.Sprintf(step, "2026-10-31T02:00:00Z", "7200s"),
+	zones := report.Activity["active_zone_minutes"]
+	if *zones.Value != 0 {
+		t.Fatalf("zones value = %v, want 0", *zones.Value)
+	}
+	if *zones.Avg7d != 3 {
+		t.Fatalf("zones week = %v, want 21 minutes over 7 days", *zones.Avg7d)
+	}
+}
+
+func TestBuildUsesMainSleepOfLastNight(t *testing.T) {
+	report := build(t, fakeSource{
+		lists: map[string][]string{"sleep": {
+			sleepPoint("2026-10-30T21:52:00Z", "2026-10-31T06:00:00Z", 472, true),
+			sleepPoint("2026-10-31T08:00:00Z", "2026-10-31T08:30:00Z", 30, false),
+			sleepPoint("2026-10-29T21:50:00Z", "2026-10-30T05:52:00Z", 480, true),
 		}},
+	}, testNow)
+
+	night := report.LastNight
+	if got := night.StartedAt.Format(time.RFC3339); got != "2026-10-31T00:52:00+03:00" {
+		t.Fatalf("StartedAt = %s, want the local time", got)
+	}
+	if *night.AsleepHours.Value != 7.9 {
+		t.Fatalf("asleep = %v hours, want 7.9 without the nap", *night.AsleepHours.Value)
+	}
+	if *night.DeepMinutes.Value != 58 || *night.RemMinutes.Value != 95 {
+		t.Fatalf("stages = %v / %v", *night.DeepMinutes.Value, *night.RemMinutes.Value)
+	}
+}
+
+func TestBuildLoadsTodaysWorkouts(t *testing.T) {
+	workout := `{"exercise":{"interval":{"startTime":"%s","startUtcOffset":"10800s","endTime":"2026-10-31T08:45:00.600Z","endUtcOffset":"10800s"},
+		"exerciseType":"WALKING","displayName":"Ходьба","notes":"присед 3x5","activeDuration":"2820s",
+		"metricsSummary":{"caloriesKcal":358.4,"steps":"4468","distanceMillimeters":3227800,"averagePaceSecondsPerMeter":0.8696,
+		"averageHeartRateBeatsPerMinute":"95","activeZoneMinutes":"12",
+		"heartRateZoneDurations":{"lightTime":"2820s","moderateTime":"90s","vigorousTime":"0s","peakTime":"0s"}}}}`
+	filters := map[string]string{}
+	report := build(t, fakeSource{
+		lists: map[string][]string{"exercise": {
+			fmt.Sprintf(workout, "2026-10-31T07:57:47.600Z"),
+			fmt.Sprintf(workout, "2026-10-30T22:30:00Z"),
+		}},
+		filters: filters,
+	}, testNow)
+
+	wantFilter := `exercise.interval.civil_start_time >= "2026-10-31T00:00:00" AND ` +
+		`exercise.interval.civil_start_time < "2026-11-01T00:00:00"`
+	if filters["exercise"] != wantFilter {
+		t.Fatalf("filter = %s, want %s", filters["exercise"], wantFilter)
+	}
+	if len(report.WorkoutsToday) != 2 {
+		t.Fatalf("WorkoutsToday = %+v, want 2", report.WorkoutsToday)
+	}
+	first := report.WorkoutsToday[0]
+	if first.Name != "Ходьба" || first.Type != "WALKING" || first.Notes != "присед 3x5" {
+		t.Fatalf("workout = %+v", first)
+	}
+	if got := first.EndedAt.Format(time.RFC3339); got != "2026-10-31T11:45:00+03:00" {
+		t.Fatalf("EndedAt = %s", got)
+	}
+	if first.Minutes != 47 || first.CaloriesKcal != 358 || first.Steps != 4468 || first.DistanceKm != 3.2 {
+		t.Fatalf("workout = %+v", first)
+	}
+	if first.AvgPaceMinPerKm != 14.5 || first.AvgHRBpm != 95 || first.ActiveZoneMinutes != 12 {
+		t.Fatalf("workout = %+v", first)
+	}
+	if want := (HRZoneMinutes{Light: 47, Moderate: 2}); *first.HRZoneMinutes != want {
+		t.Fatalf("HRZoneMinutes = %+v, want %+v", *first.HRZoneMinutes, want)
+	}
+}
+
+func TestWorkoutJSONOmitsMissingFields(t *testing.T) {
+	workout, err := decodeWorkout(json.RawMessage(`{"exercise":{
+		"interval":{"startTime":"2026-10-31T07:00:00Z","startUtcOffset":"10800s","endTime":"2026-10-31T08:00:00Z","endUtcOffset":"10800s"},
+		"exerciseType":"WEIGHTLIFTING","displayName":"Силовая","activeDuration":"3600s","metricsSummary":{}}}`))
+	if err != nil {
+		t.Fatalf("decodeWorkout() error = %v", err)
+	}
+
+	encoded, err := json.Marshal(workout)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	want := `{"name":"Силовая","type":"WEIGHTLIFTING","started_at":"2026-10-31T10:00:00+03:00",` +
+		`"ended_at":"2026-10-31T11:00:00+03:00","minutes":60}`
+	if string(encoded) != want {
+		t.Fatalf("JSON = %s, want %s", encoded, want)
+	}
+}
+
+func TestDecodeWorkoutRejectsBadZoneDuration(t *testing.T) {
+	_, err := decodeWorkout(json.RawMessage(`{"exercise":{
+		"interval":{"startTime":"2026-10-31T07:00:00Z","startUtcOffset":"10800s","endTime":"2026-10-31T08:00:00Z","endUtcOffset":"10800s"},
+		"metricsSummary":{"heartRateZoneDurations":{"lightTime":"oops"}}}}`))
+	if err == nil {
+		t.Fatal("decodeWorkout() error = nil, want a duration error")
+	}
+}
+
+func TestBuildListsUnavailableMetrics(t *testing.T) {
+	report := build(t, fakeSource{
+		failing: map[string]bool{"daily-respiratory-rate": true, "sleep": true, "exercise": true},
+	}, testNow)
+
+	if want := []string{"breaths_per_minute", "sleep", "workouts"}; !slices.Equal(report.Unavailable, want) {
+		t.Fatalf("Unavailable = %v, want %v", report.Unavailable, want)
+	}
+	if _, ok := report.Recovery["breaths_per_minute"]; !ok {
+		t.Fatal("failed metric must stay in the report with null values")
+	}
+	if report.WorkoutsToday != nil {
+		t.Fatalf("failed workouts = %+v, want null rather than empty", report.WorkoutsToday)
+	}
+}
+
+func TestBuildFailsWhenEverythingFails(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if _, err := Build(context.Background(), fakeSource{failAll: true}, Clock{Now: testNow}); err == nil {
+		t.Fatal("Build() error = nil, want an error so a scheduled run does not send an empty report")
+	}
+}
+
+func TestReportJSON(t *testing.T) {
+	report := build(t, fakeSource{
+		rollups: map[string][]string{"steps": {stepsPoint(31, 800)}},
+	}, testNow)
+
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	text := string(encoded)
+
+	for _, want := range []string{
+		`"date":"2026-10-31"`,
+		`"generated_at":"2026-10-31T22:30:15Z"`,
+		`"last_data_at":null`,
+		`"unavailable":[]`,
+		`"steps":{"value":800,"avg_7d":null}`,
+		`"started_at":null`,
+		`"workouts_today":[]`,
+		`"note":null`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("JSON has no %s:\n%s", want, text)
+		}
+	}
+}
+
+func TestDeviceClockUsesZoneOfNewestPoint(t *testing.T) {
+	now := time.Date(2026, time.October, 31, 22, 1, 0, 0, time.UTC)
+
+	clock := DeviceClock(context.Background(), fakeSource{
+		latest: map[string]string{"heart-rate": heartRatePoint("2026-10-31T21:50:00Z", "10800s")},
 	}, now)
 
-	if got := device.Format("2006-01-02 15:04"); got != "2026-11-01 01:01" {
-		t.Fatalf("DeviceNow() = %s, want the band's local time", got)
+	if got := clock.Now.Format("2006-01-02 15:04"); got != "2026-11-01 01:01" {
+		t.Fatalf("Now = %s, want the band's local time", got)
+	}
+	if got := clock.LastData.Format(time.RFC3339); got != "2026-11-01T00:50:00+03:00" {
+		t.Fatalf("LastData = %s", got)
 	}
 }
 
-func TestDeviceNowFallsBackToGivenTime(t *testing.T) {
+func TestDeviceClockFallsBackToGivenTime(t *testing.T) {
 	tests := []struct {
 		name   string
 		source fakeSource
@@ -148,147 +337,29 @@ func TestDeviceNowFallsBackToGivenTime(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := DeviceNow(context.Background(), test.source, testNow); !got.Equal(testNow) || got.Location() != testNow.Location() {
-				t.Fatalf("DeviceNow() = %v, want %v", got, testNow)
+			clock := DeviceClock(context.Background(), test.source, testNow)
+			if !clock.Now.Equal(testNow) || clock.Now.Location() != testNow.Location() {
+				t.Fatalf("Now = %v, want %v", clock.Now, testNow)
+			}
+			if clock.LastData != nil {
+				t.Fatalf("LastData = %v, want nil", clock.LastData)
 			}
 		})
 	}
 }
 
-func TestBuildCountsMissingZoneDaysAsZero(t *testing.T) {
+func TestBuildIncludesNote(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	point := fmt.Sprintf(
-		`{"civilStartTime":{"date":%s,"time":{}},"activeZoneMinutes":{"sumInFatBurnHeartZone":"14","sumInCardioHeartZone":"7"}}`,
-		date(29),
-	)
-	report, err := Build(context.Background(), fakeSource{
-		rollups: map[string][]string{"active-zone-minutes": {point}},
-	}, testNow)
+	if err := SaveNote(testNow, "болит колено"); err != nil {
+		t.Fatalf("SaveNote() error = %v", err)
+	}
+	report, err := Build(context.Background(), fakeSource{}, Clock{Now: testNow})
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-
-	zones := report.Activity[2]
-	if *zones.Value != 0 {
-		t.Fatalf("zones value = %v, want 0", *zones.Value)
-	}
-	if zones.Week.Value != 3 || zones.Week.Days != 7 {
-		t.Fatalf("zones week = %+v, want 21 minutes over 7 days", zones.Week)
-	}
-}
-
-func TestBuildUsesMainSleepOfLastNight(t *testing.T) {
-	t.Chdir(t.TempDir())
-
-	report, err := Build(context.Background(), fakeSource{
-		lists: map[string][]string{"sleep": {
-			sleepPoint("2026-10-30T21:52:00Z", "2026-10-31T06:00:00Z", 472, true),
-			sleepPoint("2026-10-31T08:00:00Z", "2026-10-31T08:30:00Z", 30, false),
-			sleepPoint("2026-10-29T21:50:00Z", "2026-10-30T05:52:00Z", 480, true),
-		}},
-	}, testNow)
-	if err != nil {
-		t.Fatalf("Build() error = %v", err)
-	}
-
-	if got := report.SleepStart.Format("15:04"); got != "00:52" {
-		t.Fatalf("SleepStart = %s, want local 00:52", got)
-	}
-	asleep := report.Sleep[0]
-	if got := fmt.Sprintf("%.2f", *asleep.Value); got != "7.87" {
-		t.Fatalf("asleep = %s hours, want 7.87 without the nap", got)
-	}
-	if *report.Sleep[1].Value != 58 || *report.Sleep[2].Value != 95 {
-		t.Fatalf("stages = %v / %v", *report.Sleep[1].Value, *report.Sleep[2].Value)
-	}
-}
-
-func TestBuildSplitsWorkoutsByDay(t *testing.T) {
-	t.Chdir(t.TempDir())
-
-	workout := `{"exercise":{"interval":{"startTime":"%s","startUtcOffset":"10800s"},"displayName":"Ходьба",
-		"activeDuration":"2820s","metricsSummary":{"distanceMillimeters":3227800,"averageHeartRateBeatsPerMinute":"95"}}}`
-	report, err := Build(context.Background(), fakeSource{
-		lists: map[string][]string{"exercise": {
-			fmt.Sprintf(workout, "2026-10-31T07:57:47.600Z"),
-			fmt.Sprintf(workout, "2026-10-30T22:30:00Z"),
-			fmt.Sprintf(workout, "2026-10-21T17:00:00Z"),
-		}},
-	}, testNow)
-	if err != nil {
-		t.Fatalf("Build() error = %v", err)
-	}
-
-	if len(report.Workouts) != 2 {
-		t.Fatalf("Workouts = %+v, want 2 on the local day", report.Workouts)
-	}
-	if got := formatWorkout(report.Workouts[0]); got != "Ходьба: 47 мин, 3.2 км, ср. пульс 95" {
-		t.Fatalf("formatWorkout() = %q", got)
-	}
-	if report.WeekTotal.Count != 0 || report.MonthTotal.Count != 1 {
-		t.Fatalf("totals = %+v / %+v", report.WeekTotal, report.MonthTotal)
-	}
-}
-
-func TestBuildListsUnavailableMetrics(t *testing.T) {
-	t.Chdir(t.TempDir())
-
-	report, err := Build(context.Background(), fakeSource{
-		failing: map[string]bool{"daily-respiratory-rate": true, "sleep": true},
-	}, testNow)
-	if err != nil {
-		t.Fatalf("Build() error = %v", err)
-	}
-
-	text := Render(report)
-	if !strings.Contains(text, "Не удалось получить: Дыхание, вд/мин, Сон") {
-		t.Fatalf("Render() =\n%s", text)
-	}
-	if len(report.Sleep) != len(sleepMetrics) {
-		t.Fatalf("Sleep rows = %d, want %d", len(report.Sleep), len(sleepMetrics))
-	}
-}
-
-func TestBuildFailsWhenEverythingFails(t *testing.T) {
-	t.Chdir(t.TempDir())
-
-	if _, err := Build(context.Background(), fakeSource{failAll: true}, testNow); err == nil {
-		t.Fatal("Build() error = nil, want an error so a scheduled run does not send an empty report")
-	}
-}
-
-func TestRender(t *testing.T) {
-	value := 54.0
-	text := Render(Report{
-		Day:         time.Date(2026, time.October, 31, 0, 0, 0, 0, time.UTC),
-		GeneratedAt: testNow,
-		Recovery: []Row{{
-			Label: "Пульс покоя, уд/мин",
-			Value: &value,
-			Week:  Average{Value: 55.4, Days: 7, Window: 7},
-			Month: Average{Value: 55.1, Days: 10, Window: 28},
-		}, {
-			Label: "SpO2, %", Digits: 1, Week: Average{Window: 7}, Month: Average{Window: 28},
-		}},
-		Note: "плохо спал",
-	})
-
-	want := "" +
-		"Отчёт за 31.10.2026 на 11:00\n" +
-		"Нагрузка с 00:00 до этого времени, сон и восстановление за ночь на 31.10\n" +
-		"\n" +
-		"ВОССТАНОВЛЕНИЕ           сегодня     ср. 7 дн.    ср. 28 дн.\n" +
-		"Пульс покоя, уд/мин           54            55   55 (10 дн.)\n" +
-		"SpO2, %                        —             —             —\n"
-	if !strings.HasPrefix(text, want) {
-		t.Fatalf("Render() =\n%s\nwant prefix\n%s", text, want)
-	}
-	if !strings.Contains(text, "Тренировки за 31.10: нет\n") {
-		t.Fatalf("Render() =\n%s", text)
-	}
-	if !strings.HasSuffix(text, "Самочувствие: плохо спал\n") {
-		t.Fatalf("Render() =\n%s", text)
+	if report.Note == nil || *report.Note != "болит колено" {
+		t.Fatalf("Note = %v", report.Note)
 	}
 }
 

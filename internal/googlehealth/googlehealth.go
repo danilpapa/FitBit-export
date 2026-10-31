@@ -62,18 +62,9 @@ func (c *Client) List(ctx context.Context, dataType string, filter string) ([]js
 	query := url.Values{"pageSize": {listPageSize}, "filter": {filter}}
 
 	for {
-		target := dataTypesURL + dataType + "/dataPoints?" + query.Encode()
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		page, err := c.listPage(ctx, dataType, query)
 		if err != nil {
-			return nil, fmt.Errorf("create %s list request: %w", dataType, err)
-		}
-
-		var page struct {
-			DataPoints    []json.RawMessage `json:"dataPoints"`
-			NextPageToken string            `json:"nextPageToken"`
-		}
-		if err := c.fetch(request, &page); err != nil {
-			return nil, fmt.Errorf("get %s data points: %w", dataType, err)
+			return nil, err
 		}
 
 		points = append(points, page.DataPoints...)
@@ -82,6 +73,31 @@ func (c *Client) List(ctx context.Context, dataType string, filter string) ([]js
 		}
 		query.Set("pageToken", page.NextPageToken)
 	}
+}
+
+func (c *Client) Latest(ctx context.Context, dataType string, filter string) (json.RawMessage, error) {
+	page, err := c.listPage(ctx, dataType, url.Values{"pageSize": {"1"}, "filter": {filter}})
+	if err != nil {
+		return nil, err
+	}
+	if len(page.DataPoints) == 0 {
+		return nil, nil
+	}
+	return page.DataPoints[0], nil
+}
+
+func (c *Client) listPage(ctx context.Context, dataType string, query url.Values) (dataPage, error) {
+	target := dataTypesURL + dataType + "/dataPoints?" + query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return dataPage{}, fmt.Errorf("create %s list request: %w", dataType, err)
+	}
+
+	var page dataPage
+	if err := c.fetch(request, &page); err != nil {
+		return dataPage{}, fmt.Errorf("get %s data points: %w", dataType, err)
+	}
+	return page, nil
 }
 
 func (c *Client) fetch(request *http.Request, result any) error {
@@ -107,6 +123,11 @@ func newDailyRollupRequest(start time.Time, end time.Time) dailyRollupRequest {
 
 func newCivilTime(day time.Time) civilTime {
 	return civilTime{Date: civilDate{Year: day.Year(), Month: int(day.Month()), Day: day.Day()}}
+}
+
+type dataPage struct {
+	DataPoints    []json.RawMessage `json:"dataPoints"`
+	NextPageToken string            `json:"nextPageToken"`
 }
 
 type dailyRollupRequest struct {

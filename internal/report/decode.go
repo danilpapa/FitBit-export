@@ -2,6 +2,7 @@ package report
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -26,6 +27,13 @@ func (i interval) start() (time.Time, error) {
 
 func (i interval) end() (time.Time, error) {
 	return localTime(i.EndTime, i.EndUTCOffset)
+}
+
+type zoneDurations struct {
+	LightTime    string `json:"lightTime"`
+	ModerateTime string `json:"moderateTime"`
+	VigorousTime string `json:"vigorousTime"`
+	PeakTime     string `json:"peakTime"`
 }
 
 type night struct {
@@ -94,29 +102,25 @@ func number(value any) (float64, bool) {
 	return 0, false
 }
 
-func latestStepStart(points []json.RawMessage) (time.Time, error) {
-	var latest time.Time
-
-	for _, raw := range points {
-		var point struct {
-			Steps struct {
-				Interval interval `json:"interval"`
-			} `json:"steps"`
-		}
-		if err := json.Unmarshal(raw, &point); err != nil {
-			return time.Time{}, fmt.Errorf("decode steps point: %w", err)
-		}
-
-		start, err := point.Steps.Interval.start()
-		if err != nil {
-			return time.Time{}, fmt.Errorf("decode steps start: %w", err)
-		}
-		if start.After(latest) {
-			latest = start
-		}
+func heartRateTime(raw json.RawMessage) (time.Time, error) {
+	var point struct {
+		HeartRate struct {
+			SampleTime struct {
+				PhysicalTime string `json:"physicalTime"`
+				UTCOffset    string `json:"utcOffset"`
+			} `json:"sampleTime"`
+		} `json:"heartRate"`
+	}
+	if err := json.Unmarshal(raw, &point); err != nil {
+		return time.Time{}, fmt.Errorf("decode heart rate point: %w", err)
 	}
 
-	return latest, nil
+	sample := point.HeartRate.SampleTime
+	sampled, err := localTime(sample.PhysicalTime, sample.UTCOffset)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("decode heart rate time: %w", err)
+	}
+	return sampled, nil
 }
 
 func decodeNights(points []json.RawMessage) (map[string]night, error) {
@@ -177,54 +181,109 @@ func decodeNights(points []json.RawMessage) (map[string]night, error) {
 	return nights, nil
 }
 
-func decodeWorkouts(points []json.RawMessage) (map[string][]Workout, error) {
-	byDay := map[string][]Workout{}
+func decodeWorkouts(points []json.RawMessage) ([]Workout, error) {
+	workouts := make([]Workout, 0, len(points))
 
 	for _, raw := range points {
-		var point struct {
-			Exercise struct {
-				Interval       interval `json:"interval"`
-				ExerciseType   string   `json:"exerciseType"`
-				DisplayName    string   `json:"displayName"`
-				ActiveDuration string   `json:"activeDuration"`
-				MetricsSummary struct {
-					DistanceMillimeters float64 `json:"distanceMillimeters"`
-					AverageHeartRate    int64   `json:"averageHeartRateBeatsPerMinute,string"`
-				} `json:"metricsSummary"`
-			} `json:"exercise"`
-		}
-		if err := json.Unmarshal(raw, &point); err != nil {
-			return nil, fmt.Errorf("decode exercise point: %w", err)
-		}
-		exercise := point.Exercise
-
-		start, err := exercise.Interval.start()
+		workout, err := decodeWorkout(raw)
 		if err != nil {
-			return nil, fmt.Errorf("decode exercise start: %w", err)
+			return nil, err
 		}
-
-		var duration time.Duration
-		if exercise.ActiveDuration != "" {
-			if duration, err = time.ParseDuration(exercise.ActiveDuration); err != nil {
-				return nil, fmt.Errorf("decode exercise duration: %w", err)
-			}
-		}
-
-		name := exercise.DisplayName
-		if name == "" {
-			name = exercise.ExerciseType
-		}
-
-		date := dateKey(start)
-		byDay[date] = append(byDay[date], Workout{
-			Name:       name,
-			Minutes:    duration.Minutes(),
-			Kilometers: exercise.MetricsSummary.DistanceMillimeters * millimetersToKm,
-			HeartRate:  exercise.MetricsSummary.AverageHeartRate,
-		})
+		workouts = append(workouts, workout)
 	}
 
-	return byDay, nil
+	return workouts, nil
+}
+
+func decodeWorkout(raw json.RawMessage) (Workout, error) {
+	var point struct {
+		Exercise struct {
+			Interval       interval `json:"interval"`
+			ExerciseType   string   `json:"exerciseType"`
+			DisplayName    string   `json:"displayName"`
+			Notes          string   `json:"notes"`
+			ActiveDuration string   `json:"activeDuration"`
+			MetricsSummary struct {
+				CaloriesKcal           float64        `json:"caloriesKcal"`
+				Steps                  int64          `json:"steps,string"`
+				DistanceMillimeters    float64        `json:"distanceMillimeters"`
+				AveragePace            float64        `json:"averagePaceSecondsPerMeter"`
+				AverageHeartRate       int64          `json:"averageHeartRateBeatsPerMinute,string"`
+				ActiveZoneMinutes      int64          `json:"activeZoneMinutes,string"`
+				HeartRateZoneDurations *zoneDurations `json:"heartRateZoneDurations"`
+			} `json:"metricsSummary"`
+		} `json:"exercise"`
+	}
+	if err := json.Unmarshal(raw, &point); err != nil {
+		return Workout{}, fmt.Errorf("decode exercise point: %w", err)
+	}
+	exercise := point.Exercise
+	summary := exercise.MetricsSummary
+
+	start, err := exercise.Interval.start()
+	if err != nil {
+		return Workout{}, fmt.Errorf("decode exercise start: %w", err)
+	}
+	end, err := exercise.Interval.end()
+	if err != nil {
+		return Workout{}, fmt.Errorf("decode exercise end: %w", err)
+	}
+	minutes, err := durationMinutes(exercise.ActiveDuration)
+	if err != nil {
+		return Workout{}, fmt.Errorf("decode exercise duration: %w", err)
+	}
+
+	workout := Workout{
+		Name:              exercise.DisplayName,
+		Type:              exercise.ExerciseType,
+		StartedAt:         start.Truncate(time.Second),
+		EndedAt:           end.Truncate(time.Second),
+		Minutes:           round(minutes, 0),
+		CaloriesKcal:      round(summary.CaloriesKcal, 0),
+		Steps:             summary.Steps,
+		DistanceKm:        round(summary.DistanceMillimeters*millimetersToKm, 1),
+		AvgPaceMinPerKm:   round(summary.AveragePace*secondsPerMeterToMinPerKm, 1),
+		AvgHRBpm:          summary.AverageHeartRate,
+		ActiveZoneMinutes: summary.ActiveZoneMinutes,
+		Notes:             exercise.Notes,
+	}
+
+	if summary.HeartRateZoneDurations != nil {
+		workout.HRZoneMinutes, err = summary.HeartRateZoneDurations.minutes()
+		if err != nil {
+			return Workout{}, fmt.Errorf("decode exercise heart rate zones: %w", err)
+		}
+	}
+	return workout, nil
+}
+
+func (z zoneDurations) minutes() (*HRZoneMinutes, error) {
+	light, lightErr := durationMinutes(z.LightTime)
+	moderate, moderateErr := durationMinutes(z.ModerateTime)
+	vigorous, vigorousErr := durationMinutes(z.VigorousTime)
+	peak, peakErr := durationMinutes(z.PeakTime)
+	if err := errors.Join(lightErr, moderateErr, vigorousErr, peakErr); err != nil {
+		return nil, err
+	}
+
+	return &HRZoneMinutes{
+		Light:    round(light, 0),
+		Moderate: round(moderate, 0),
+		Vigorous: round(vigorous, 0),
+		Peak:     round(peak, 0),
+	}, nil
+}
+
+func durationMinutes(value string) (float64, error) {
+	if value == "" {
+		return 0, nil
+	}
+
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, err
+	}
+	return duration.Minutes(), nil
 }
 
 func localTime(value string, offset string) (time.Time, error) {
