@@ -14,13 +14,14 @@ import (
 )
 
 const (
-	pageTimeout     = 40 * time.Second
+	pageTimeout     = 90 * time.Second
 	exitWaitTime    = 2 * time.Second
 	readBufferSize  = 32 * 1024
 	renderAttempts  = 2
 	pageEnd         = "</html>"
 	chromeNoise     = "dbus"
 	maxChromeDetail = 3
+	disabledDBus    = "DBUS_SESSION_BUS_ADDRESS=disabled:"
 )
 
 var chromeCandidates = []string{
@@ -44,7 +45,7 @@ func renderWithRetry(ctx context.Context, chrome string, url string) (string, er
 
 	for attempt := 1; attempt <= renderAttempts; attempt++ {
 		page, err = render(ctx, chrome, url)
-		if err == nil || ctx.Err() != nil {
+		if err == nil || ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
 			return page, err
 		}
 		log.Printf("chrome: attempt %d failed: %v", attempt, err)
@@ -59,6 +60,7 @@ func render(ctx context.Context, chrome string, url string) (string, error) {
 	}
 	defer os.RemoveAll(profile)
 
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, pageTimeout)
 	defer cancel()
 
@@ -66,6 +68,7 @@ func render(ctx context.Context, chrome string, url string) (string, error) {
 		"--headless=new",
 		"--no-sandbox",
 		"--disable-gpu",
+		"--disable-dev-shm-usage",
 		"--no-first-run",
 		"--lang=en-US",
 		"--accept-lang=en-US",
@@ -74,6 +77,7 @@ func render(ctx context.Context, chrome string, url string) (string, error) {
 		"--dump-dom",
 		url,
 	)
+	command.Env = append(os.Environ(), disabledDBus)
 	command.WaitDelay = exitWaitTime
 
 	var stderr bytes.Buffer
@@ -88,16 +92,21 @@ func render(ctx context.Context, chrome string, url string) (string, error) {
 	}
 
 	page, readErr := readPage(stdout)
+	elapsed := time.Since(started).Round(time.Second)
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	cancel()
 	_ = command.Wait()
 
-	if !strings.Contains(page, pageEnd) {
-		return "", fmt.Errorf(
-			"render %s: page is incomplete after %d bytes: %v; chrome: %s",
-			url, len(page), readErr, chromeDetail(stderr.String()),
-		)
+	if strings.Contains(page, pageEnd) {
+		log.Printf("chrome: rendered %s in %s", url, elapsed)
+		return page, nil
 	}
-	return page, nil
+
+	detail := chromeDetail(stderr.String())
+	if timedOut {
+		return "", fmt.Errorf("render %s: chrome timed out after %s; chrome: %s: %w", url, elapsed, detail, context.DeadlineExceeded)
+	}
+	return "", fmt.Errorf("render %s: page is incomplete after %d bytes in %s: %v; chrome: %s", url, len(page), elapsed, readErr, detail)
 }
 
 func readPage(output io.Reader) (string, error) {

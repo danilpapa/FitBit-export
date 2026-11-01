@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type chunkReader struct {
@@ -76,6 +77,32 @@ func TestRenderExplainsFailure(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "dbus") {
 		t.Fatalf("error = %v, want no dbus noise", err)
+	}
+}
+
+func TestRenderReportsTimeout(t *testing.T) {
+	chrome := fakeChrome(t, `exec sleep 5`)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err := renderWithRetry(ctx, chrome, "https://hevy.com/workout/example")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want a timeout", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("error = %v, want it to name the timeout", err)
+	}
+}
+
+func TestRenderDisablesDBus(t *testing.T) {
+	chrome := fakeChrome(t, `echo "<html>$DBUS_SESSION_BUS_ADDRESS</html>"`)
+
+	page, err := render(context.Background(), chrome, "https://hevy.com/workout/example")
+	if err != nil {
+		t.Fatalf("render() error = %v", err)
+	}
+	if !strings.Contains(page, "disabled:") {
+		t.Fatalf("page = %q, want the disabled address", page)
 	}
 }
 
