@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	weekDays = 7
+	weekDays           = 7
+	weightLookbackDays = 30
 
 	clockLookback   = 48 * time.Hour
 	civilTimeLayout = "2006-01-02T15:04:05"
@@ -19,6 +20,7 @@ const (
 	secondsToHours  = 1.0 / 3600
 	minutesToHours  = 1.0 / 60
 	millimetersToKm = 1.0 / 1_000_000
+	gramsToKg       = 1.0 / 1000
 
 	secondsPerMeterToMinPerKm = 1000.0 / 60
 )
@@ -43,7 +45,14 @@ type Report struct {
 	Recovery      map[string]Metric `json:"recovery_last_night"`
 	Activity      map[string]Metric `json:"activity_today"`
 	WorkoutsToday []Workout         `json:"workouts_today"`
+	Body          Body              `json:"body"`
+	Nutrition     map[string]Metric `json:"nutrition_today"`
 	Note          *string           `json:"note"`
+}
+
+type Body struct {
+	WeightKg  Metric     `json:"weight_kg"`
+	WeighedAt *time.Time `json:"weighed_at"`
 }
 
 type LastNight struct {
@@ -93,6 +102,8 @@ type metric struct {
 	rollup      bool
 	fillMissing bool
 }
+
+var nutritionKeys = []string{caloriesKey, proteinKey, carbsKey, fatKey}
 
 var recoveryMetrics = []metric{
 	{key: "resting_hr_bpm", dataType: "daily-resting-heart-rate", group: "dailyRestingHeartRate", fields: []string{"beatsPerMinute"}},
@@ -166,6 +177,8 @@ func Build(ctx context.Context, source Source, clock Clock) (Report, error) {
 	b.addSleep(ctx)
 	b.report.Activity = b.metrics(ctx, activityMetrics)
 	b.addWorkouts(ctx)
+	b.addBody(ctx)
+	b.addNutrition(ctx)
 
 	if !b.loaded {
 		return Report{}, fmt.Errorf("no metric available: %w", b.err)
@@ -281,6 +294,50 @@ func (b *builder) addWorkouts(ctx context.Context) {
 	})
 }
 
+func (b *builder) addBody(ctx context.Context) {
+	var weighIns []weighIn
+	b.attempt("weight", func() error {
+		points, err := b.source.List(ctx, "weight", weightFilter(b.day.AddDate(0, 0, -weightLookbackDays), b.end))
+		if err != nil {
+			return err
+		}
+		weighIns, err = decodeWeighIns(points)
+		return err
+	})
+	if len(weighIns) == 0 {
+		return
+	}
+
+	series := map[string]float64{}
+	for _, entry := range weighIns {
+		series[dateKey(entry.at)] = entry.kilograms
+	}
+
+	latest := weighIns[len(weighIns)-1]
+	value := round(latest.kilograms, 1)
+	b.report.Body = Body{
+		WeightKg:  Metric{Value: &value, Avg7d: average(series, b.day, 1)},
+		WeighedAt: &latest.at,
+	}
+}
+
+func (b *builder) addNutrition(ctx context.Context) {
+	var series map[string]map[string]float64
+	b.attempt("nutrition", func() error {
+		points, err := b.source.DailyRollUp(ctx, "nutrition-log", b.start, b.end)
+		if err != nil {
+			return err
+		}
+		series, err = decodeNutrition(points)
+		return err
+	})
+
+	b.report.Nutrition = make(map[string]Metric, len(nutritionKeys))
+	for _, key := range nutritionKeys {
+		b.report.Nutrition[key] = newMetric(series[key], b.day, 0)
+	}
+}
+
 func newMetric(series map[string]float64, day time.Time, digits int) Metric {
 	metric := Metric{Avg7d: average(series, day, digits)}
 	if value, ok := series[dateKey(day)]; ok {
@@ -318,6 +375,13 @@ func startOfDay(moment time.Time) time.Time {
 
 func dateKey(day time.Time) string {
 	return day.Format(time.DateOnly)
+}
+
+func weightFilter(start time.Time, end time.Time) string {
+	return fmt.Sprintf(
+		`weight.sample_time.civil_time >= "%s" AND weight.sample_time.civil_time < "%s"`,
+		start.Format(civilTimeLayout), end.Format(civilTimeLayout),
+	)
 }
 
 func dateFilter(dataType string, start time.Time, end time.Time) string {

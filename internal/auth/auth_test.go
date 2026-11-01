@@ -76,8 +76,8 @@ func TestRunReportsMissingScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	if len(result.MissingScopes) != 2 {
-		t.Fatalf("MissingScopes = %v, want 2 scopes", result.MissingScopes)
+	if len(result.MissingScopes) != len(scopes)-1 {
+		t.Fatalf("MissingScopes = %v, want all scopes but the granted one", result.MissingScopes)
 	}
 }
 

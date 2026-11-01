@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,13 @@ import (
 const (
 	minutesAsleep = "asleep"
 	minutesAwake  = "awake"
+
+	caloriesKey = "calories_kcal"
+	proteinKey  = "protein_g"
+	carbsKey    = "carbs_g"
+	fatKey      = "fat_g"
+
+	proteinNutrient = "PROTEIN"
 )
 
 type interval struct {
@@ -27,6 +35,24 @@ func (i interval) start() (time.Time, error) {
 
 func (i interval) end() (time.Time, error) {
 	return localTime(i.EndTime, i.EndUTCOffset)
+}
+
+type sampleTime struct {
+	PhysicalTime string `json:"physicalTime"`
+	UTCOffset    string `json:"utcOffset"`
+}
+
+func (s sampleTime) local() (time.Time, error) {
+	return localTime(s.PhysicalTime, s.UTCOffset)
+}
+
+type gramsSum struct {
+	GramsSum float64 `json:"gramsSum"`
+}
+
+type weighIn struct {
+	at        time.Time
+	kilograms float64
 }
 
 type zoneDurations struct {
@@ -105,22 +131,98 @@ func number(value any) (float64, bool) {
 func heartRateTime(raw json.RawMessage) (time.Time, error) {
 	var point struct {
 		HeartRate struct {
-			SampleTime struct {
-				PhysicalTime string `json:"physicalTime"`
-				UTCOffset    string `json:"utcOffset"`
-			} `json:"sampleTime"`
+			SampleTime sampleTime `json:"sampleTime"`
 		} `json:"heartRate"`
 	}
 	if err := json.Unmarshal(raw, &point); err != nil {
 		return time.Time{}, fmt.Errorf("decode heart rate point: %w", err)
 	}
 
-	sample := point.HeartRate.SampleTime
-	sampled, err := localTime(sample.PhysicalTime, sample.UTCOffset)
+	sampled, err := point.HeartRate.SampleTime.local()
 	if err != nil {
 		return time.Time{}, fmt.Errorf("decode heart rate time: %w", err)
 	}
 	return sampled, nil
+}
+
+func decodeWeighIns(points []json.RawMessage) ([]weighIn, error) {
+	weighIns := make([]weighIn, 0, len(points))
+
+	for _, raw := range points {
+		var point struct {
+			Weight struct {
+				SampleTime  sampleTime `json:"sampleTime"`
+				WeightGrams float64    `json:"weightGrams"`
+			} `json:"weight"`
+		}
+		if err := json.Unmarshal(raw, &point); err != nil {
+			return nil, fmt.Errorf("decode weight point: %w", err)
+		}
+
+		at, err := point.Weight.SampleTime.local()
+		if err != nil {
+			return nil, fmt.Errorf("decode weight time: %w", err)
+		}
+		weighIns = append(weighIns, weighIn{at: at.Truncate(time.Second), kilograms: point.Weight.WeightGrams * gramsToKg})
+	}
+
+	slices.SortFunc(weighIns, func(a, b weighIn) int {
+		return a.at.Compare(b.at)
+	})
+	return weighIns, nil
+}
+
+func decodeNutrition(points []json.RawMessage) (map[string]map[string]float64, error) {
+	series := map[string]map[string]float64{}
+	add := func(key string, date string, value float64) {
+		if value == 0 {
+			return
+		}
+		if series[key] == nil {
+			series[key] = map[string]float64{}
+		}
+		series[key][date] = value
+	}
+
+	for _, raw := range points {
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return nil, fmt.Errorf("decode nutrition point: %w", err)
+		}
+		date, err := pointDate(fields, "civilStartTime")
+		if err != nil {
+			return nil, fmt.Errorf("decode nutrition point: %w", err)
+		}
+
+		var point struct {
+			NutritionLog struct {
+				Energy struct {
+					KcalSum float64 `json:"kcalSum"`
+				} `json:"energy"`
+				TotalCarbohydrate gramsSum `json:"totalCarbohydrate"`
+				TotalFat          gramsSum `json:"totalFat"`
+				Nutrients         []struct {
+					Nutrient string   `json:"nutrient"`
+					Quantity gramsSum `json:"quantity"`
+				} `json:"nutrients"`
+			} `json:"nutritionLog"`
+		}
+		if err := json.Unmarshal(raw, &point); err != nil {
+			return nil, fmt.Errorf("decode nutrition point: %w", err)
+		}
+
+		log := point.NutritionLog
+		add(caloriesKey, date, log.Energy.KcalSum)
+		add(carbsKey, date, log.TotalCarbohydrate.GramsSum)
+		add(fatKey, date, log.TotalFat.GramsSum)
+		for _, nutrient := range log.Nutrients {
+			if nutrient.Nutrient == proteinNutrient {
+				add(proteinKey, date, nutrient.Quantity.GramsSum)
+			}
+		}
+	}
+
+	return series, nil
 }
 
 func decodeNights(points []json.RawMessage) (map[string]night, error) {

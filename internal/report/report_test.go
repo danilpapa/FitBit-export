@@ -260,6 +260,104 @@ func TestDecodeWorkoutRejectsBadZoneDuration(t *testing.T) {
 	}
 }
 
+func weightPoint(physicalTime string, grams int) string {
+	return fmt.Sprintf(`{"weight":{"sampleTime":{"physicalTime":"%s","utcOffset":"10800s"},"weightGrams":%d}}`, physicalTime, grams)
+}
+
+func nutritionPoint(day int, kcal float64, protein float64) string {
+	return fmt.Sprintf(`{"civilStartTime":{"date":%s,"time":{}},"nutritionLog":{"energy":{"kcalSum":%v},
+		"totalCarbohydrate":{"gramsSum":250.4},"totalFat":{"gramsSum":70},
+		"nutrients":[{"nutrient":"SUGAR","quantity":{"gramsSum":40}},{"nutrient":"PROTEIN","quantity":{"gramsSum":%v}}]}}`,
+		date(day), kcal, protein)
+}
+
+func TestBuildUsesLatestWeighIn(t *testing.T) {
+	filters := map[string]string{}
+	report := build(t, fakeSource{
+		lists: map[string][]string{"weight": {
+			weightPoint("2026-10-25T06:00:00Z", 78000),
+			weightPoint("2026-10-30T06:00:00.5Z", 77040),
+			weightPoint("2026-10-28T06:00:00Z", 77000),
+		}},
+		filters: filters,
+	}, testNow)
+
+	body := report.Body
+	if *body.WeightKg.Value != 77 {
+		t.Fatalf("weight = %v, want the newest weigh-in", *body.WeightKg.Value)
+	}
+	if *body.WeightKg.Avg7d != 77.3 {
+		t.Fatalf("weight week = %v, want 77.3", *body.WeightKg.Avg7d)
+	}
+	if got := body.WeighedAt.Format(time.RFC3339); got != "2026-10-30T09:00:00+03:00" {
+		t.Fatalf("WeighedAt = %s", got)
+	}
+
+	want := `weight.sample_time.civil_time >= "2026-10-01T00:00:00" AND ` +
+		`weight.sample_time.civil_time < "2026-11-01T00:00:00"`
+	if filters["weight"] != want {
+		t.Fatalf("filter = %s, want %s", filters["weight"], want)
+	}
+}
+
+func TestBuildLoadsNutrition(t *testing.T) {
+	report := build(t, fakeSource{
+		rollups: map[string][]string{"nutrition-log": {
+			nutritionPoint(31, 2400.4, 150.6),
+			nutritionPoint(30, 2000, 120),
+			nutritionPoint(29, 2200, 140),
+		}},
+	}, testNow)
+
+	calories := report.Nutrition["calories_kcal"]
+	if *calories.Value != 2400 || *calories.Avg7d != 2100 {
+		t.Fatalf("calories = %v / %v", *calories.Value, *calories.Avg7d)
+	}
+	if got := *report.Nutrition["protein_g"].Value; got != 151 {
+		t.Fatalf("protein = %v, want 151", got)
+	}
+	if got := *report.Nutrition["carbs_g"].Value; got != 250 {
+		t.Fatalf("carbs = %v", got)
+	}
+	if got := *report.Nutrition["fat_g"].Value; got != 70 {
+		t.Fatalf("fat = %v", got)
+	}
+}
+
+func TestBuildLeavesEmptyNutritionDayUnset(t *testing.T) {
+	report := build(t, fakeSource{
+		rollups: map[string][]string{"nutrition-log": {
+			fmt.Sprintf(`{"civilStartTime":{"date":%s,"time":{}}}`, date(31)),
+			nutritionPoint(30, 2000, 120),
+		}},
+	}, testNow)
+
+	calories := report.Nutrition["calories_kcal"]
+	if calories.Value != nil {
+		t.Fatalf("calories = %v, want no food logged today", *calories.Value)
+	}
+	if *calories.Avg7d != 2000 {
+		t.Fatalf("calories week = %v", *calories.Avg7d)
+	}
+}
+
+func TestBuildKeepsReportWithoutNutritionAccess(t *testing.T) {
+	report := build(t, fakeSource{
+		failing: map[string]bool{"nutrition-log": true},
+		rollups: map[string][]string{"steps": {stepsPoint(31, 800)}},
+	}, testNow)
+
+	if !slices.Equal(report.Unavailable, []string{"nutrition"}) {
+		t.Fatalf("Unavailable = %v", report.Unavailable)
+	}
+	if metric, ok := report.Nutrition["protein_g"]; !ok || metric.Value != nil {
+		t.Fatalf("protein = %+v, want a null metric", metric)
+	}
+	if *report.Activity["steps"].Value != 800 {
+		t.Fatalf("steps = %v", *report.Activity["steps"].Value)
+	}
+}
+
 func TestBuildListsUnavailableMetrics(t *testing.T) {
 	report := build(t, fakeSource{
 		failing: map[string]bool{"daily-respiratory-rate": true, "sleep": true, "exercise": true},
@@ -303,6 +401,8 @@ func TestReportJSON(t *testing.T) {
 		`"steps":{"value":800,"avg_7d":null}`,
 		`"started_at":null`,
 		`"workouts_today":[]`,
+		`"body":{"weight_kg":{"value":null,"avg_7d":null},"weighed_at":null}`,
+		`"calories_kcal":{"value":null,"avg_7d":null}`,
 		`"note":null`,
 	} {
 		if !strings.Contains(text, want) {
