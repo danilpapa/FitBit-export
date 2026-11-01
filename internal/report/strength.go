@@ -89,9 +89,20 @@ func recentHevyWorkouts(records []Workout) []Workout {
 		return !hevyURLPattern.MatchString(record.Notes)
 	})
 	slices.SortFunc(linked, func(a, b Workout) int {
-		return a.StartedAt.Compare(b.StartedAt)
+		return b.StartedAt.Compare(a.StartedAt)
 	})
-	return linked[max(0, len(linked)-maxStrengthWorkouts):]
+
+	seen := map[string]bool{}
+	linked = slices.DeleteFunc(linked, func(record Workout) bool {
+		url := hevyURLPattern.FindString(record.Notes)
+		repeated := seen[url]
+		seen[url] = true
+		return repeated
+	})
+
+	linked = linked[:min(len(linked), maxStrengthWorkouts)]
+	slices.Reverse(linked)
+	return linked
 }
 
 func loadStrengthWorkout(ctx context.Context, load PageLoader, record Workout) StrengthWorkout {

@@ -1,10 +1,12 @@
 package browser
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,10 +14,13 @@ import (
 )
 
 const (
-	pageTimeout    = 40 * time.Second
-	exitWaitTime   = 2 * time.Second
-	readBufferSize = 32 * 1024
-	pageEnd        = "</html>"
+	pageTimeout     = 40 * time.Second
+	exitWaitTime    = 2 * time.Second
+	readBufferSize  = 32 * 1024
+	renderAttempts  = 2
+	pageEnd         = "</html>"
+	chromeNoise     = "dbus"
+	maxChromeDetail = 3
 )
 
 var chromeCandidates = []string{
@@ -30,7 +35,24 @@ func Render(ctx context.Context, url string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return renderWithRetry(ctx, chrome, url)
+}
 
+func renderWithRetry(ctx context.Context, chrome string, url string) (string, error) {
+	var page string
+	var err error
+
+	for attempt := 1; attempt <= renderAttempts; attempt++ {
+		page, err = render(ctx, chrome, url)
+		if err == nil || ctx.Err() != nil {
+			return page, err
+		}
+		log.Printf("chrome: attempt %d failed: %v", attempt, err)
+	}
+	return "", err
+}
+
+func render(ctx context.Context, chrome string, url string) (string, error) {
 	profile, err := os.MkdirTemp("", "fitbit-export-chrome-")
 	if err != nil {
 		return "", fmt.Errorf("create chrome profile: %w", err)
@@ -54,6 +76,9 @@ func Render(ctx context.Context, url string) (string, error) {
 	)
 	command.WaitDelay = exitWaitTime
 
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		return "", fmt.Errorf("read chrome output: %w", err)
@@ -62,12 +87,15 @@ func Render(ctx context.Context, url string) (string, error) {
 		return "", fmt.Errorf("start chrome: %w", err)
 	}
 
-	page, err := readPage(stdout)
+	page, readErr := readPage(stdout)
 	cancel()
 	_ = command.Wait()
 
-	if !isComplete(page) {
-		return "", fmt.Errorf("render %s: page is incomplete: %v", url, err)
+	if !strings.Contains(page, pageEnd) {
+		return "", fmt.Errorf(
+			"render %s: page is incomplete after %d bytes: %v; chrome: %s",
+			url, len(page), readErr, chromeDetail(stderr.String()),
+		)
 	}
 	return page, nil
 }
@@ -76,7 +104,7 @@ func readPage(output io.Reader) (string, error) {
 	var page strings.Builder
 	buffer := make([]byte, readBufferSize)
 
-	for !isComplete(page.String()) {
+	for !strings.HasSuffix(strings.TrimSpace(page.String()), pageEnd) {
 		count, err := output.Read(buffer)
 		page.Write(buffer[:count])
 		if err != nil {
@@ -86,8 +114,18 @@ func readPage(output io.Reader) (string, error) {
 	return page.String(), nil
 }
 
-func isComplete(page string) bool {
-	return strings.HasSuffix(strings.TrimSpace(page), pageEnd)
+func chromeDetail(stderr string) string {
+	var lines []string
+	for line := range strings.Lines(stderr) {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.Contains(line, chromeNoise) {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return "no output"
+	}
+	return strings.Join(lines[max(0, len(lines)-maxChromeDetail):], " | ")
 }
 
 func findChrome() (string, error) {

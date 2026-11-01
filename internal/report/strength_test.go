@@ -137,6 +137,30 @@ func TestBuildStrengthLogKeepsRecentWorkouts(t *testing.T) {
 	}
 }
 
+func TestBuildStrengthLogLoadsRepeatedLinkOnce(t *testing.T) {
+	loads := 0
+	load := func(context.Context, string) (string, error) {
+		loads++
+		return hevyPage, nil
+	}
+	source := fakeSource{lists: map[string][]string{"exercise": {
+		strengthPoint("2026-10-03T15:00:00Z", "https://hevy.com/workout/same"),
+		strengthPoint("2026-10-30T15:00:00Z", "https://hevy.com/workout/same"),
+	}}}
+
+	log, err := BuildStrengthLog(context.Background(), source, load, Clock{Now: testNow}, StrengthHistoryDays)
+	if err != nil {
+		t.Fatalf("BuildStrengthLog() error = %v", err)
+	}
+
+	if loads != 1 || len(log.Workouts) != 1 {
+		t.Fatalf("loads = %d, Workouts = %+v, want one workout", loads, log.Workouts)
+	}
+	if got := log.Workouts[0].StartedAt.Format("2006-01-02"); got != "2026-10-30" {
+		t.Fatalf("StartedAt = %s, want the newest record", got)
+	}
+}
+
 func TestBuildStrengthLogKeepsFailedPage(t *testing.T) {
 	load := func(context.Context, string) (string, error) { return "", errors.New("page is incomplete") }
 	source := fakeSource{lists: map[string][]string{"exercise": {
