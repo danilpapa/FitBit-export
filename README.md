@@ -67,6 +67,14 @@ go run ./cmd/fitbit-export note "Slept badly and felt tired"
 
 Notes are saved locally in `exports/notes/` and added to the report. Cloud runs cannot see them.
 
+Print your recent strength workouts:
+
+```bash
+go run ./cmd/fitbit-export strength
+```
+
+To track a workout, add its public Hevy link to the workout notes in Google Health, for example `https://hevy.com/workout/abc123`. The record must be one that returns `notes` from the API, and its date must match the workout. The command opens each link in headless Chrome, reads the sets, and calculates volume and estimated one-rep max. It covers the last 12 linked workouts from the past 90 days.
+
 ## Set up daily advice
 
 1. Fork this repository.
@@ -79,9 +87,20 @@ Notes are saved locally in `exports/notes/` and added to the report. Cloud runs 
    health.googleapis.com
    oauth2.googleapis.com
    api.telegram.org
+   dl.google.com
+   hevy.com
+   api.hevyapp.com
    ```
 
-6. Add these environment variables:
+6. Add this setup script. It installs Chrome for the `strength` command:
+
+   ```bash
+   #!/bin/bash
+   curl -fsSL -o /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+   apt-get install -y /tmp/chrome.deb
+   ```
+
+7. Add these environment variables:
 
    ```env
    GOOGLE_HEALTH_CLIENT_ID=...
@@ -91,22 +110,24 @@ Notes are saved locally in `exports/notes/` and added to the report. Cloud runs 
    TELEGRAM_CHAT_ID=...
    ```
 
-7. Create a daily scheduled task at [claude.ai/code/routines](https://claude.ai/code/routines).
-8. Select your repository and the new cloud environment, then remove any connectors you do not need.
-9. Use this prompt:
+8. Create a daily scheduled task at [claude.ai/code/routines](https://claude.ai/code/routines).
+9. Select your repository and the new cloud environment, then remove any connectors you do not need.
+10. Use this prompt:
 
    ```text
-   Run the fitbit-advice skill.
+   Run the fitbit-advice skill, then run the strength-coach skill.
    My goals: <your goals>.
+   My body weight: <kg>.
    ```
 
-10. Click **Run now** and check that the message arrives in Telegram.
+11. Click **Run now** and check that the message arrives in Telegram. The `strength-coach` skill sends a second message only on days with a linked workout.
 
 ## Customize
 
 - **Goals:** edit the prompt of your scheduled task.
 - **Schedule:** change the task time. Run it late in the evening so the report covers most of the day.
 - **Advice:** edit `.claude/skills/fitbit-advice/SKILL.md`.
+- **Strength coaching:** edit `.claude/skills/strength-coach/SKILL.md`.
 - **Metrics:** edit `recoveryMetrics` and `activityMetrics` in `internal/report/report.go`.
 - **Public pages:** if you use GitHub Pages for Google publishing, replace the text and links in `docs/`.
 
@@ -114,6 +135,8 @@ Notes are saved locally in `exports/notes/` and added to the report. Cloud runs 
 
 - **`OAuth refresh returned HTTP 400`:** the refresh token has expired, or the run cannot see your variables. Check that the task uses the right cloud environment, then run `auth` again if needed.
 - **Telegram returns `403` in a cloud run:** allow `api.telegram.org` in the environment used by the task.
+- **`chrome is not installed`:** check the setup script and allow `dl.google.com`.
+- **A workout has an `error`:** open the Hevy link and check that the page is public. Hevy may also have changed its page layout.
 
 ## Privacy
 

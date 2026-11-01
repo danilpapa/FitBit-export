@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"fitbit-export/internal/auth"
+	"fitbit-export/internal/browser"
 	"fitbit-export/internal/config"
 	"fitbit-export/internal/googlehealth"
 	"fitbit-export/internal/httpclient"
@@ -43,16 +44,26 @@ func run(ctx context.Context, args []string) error {
 	if command == "note" {
 		return runNote(clock.Now, args[1:])
 	}
+	if command == "strength" {
+		log, err := report.BuildStrengthLog(ctx, client, browser.Render, clock, report.StrengthHistoryDays)
+		if err != nil {
+			return err
+		}
+		return printJSON(log)
+	}
 
 	daily, err := report.Build(ctx, client, clock)
 	if err != nil {
 		return err
 	}
+	return printJSON(daily)
+}
 
+func printJSON(value any) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	encoder.SetEscapeHTML(false)
-	return encoder.Encode(daily)
+	return encoder.Encode(value)
 }
 
 func runAuth(ctx context.Context, cfg config.Config) error {

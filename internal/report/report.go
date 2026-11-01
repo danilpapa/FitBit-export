@@ -148,7 +148,7 @@ func DeviceClock(ctx context.Context, source Source, now time.Time) Clock {
 
 func Build(ctx context.Context, source Source, clock Clock) (Report, error) {
 	now := clock.Now
-	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	day := startOfDay(now)
 	b := &builder{
 		source: source,
 		day:    day,
@@ -272,10 +272,7 @@ func (b *builder) nightMetric(nights map[string]night, key string, scale float64
 
 func (b *builder) addWorkouts(ctx context.Context) {
 	b.attempt("workouts", func() error {
-		points, err := b.source.List(ctx, "exercise", fmt.Sprintf(
-			`exercise.interval.civil_start_time >= "%s" AND exercise.interval.civil_start_time < "%s"`,
-			b.day.Format(civilTimeLayout), b.end.Format(civilTimeLayout),
-		))
+		points, err := b.source.List(ctx, "exercise", workoutFilter(b.day, b.end))
 		if err != nil {
 			return err
 		}
@@ -313,6 +310,10 @@ func average(series map[string]float64, day time.Time, digits int) *float64 {
 func round(value float64, digits int) float64 {
 	scale := math.Pow10(digits)
 	return math.Round(value*scale) / scale
+}
+
+func startOfDay(moment time.Time) time.Time {
+	return time.Date(moment.Year(), moment.Month(), moment.Day(), 0, 0, 0, 0, moment.Location())
 }
 
 func dateKey(day time.Time) string {
