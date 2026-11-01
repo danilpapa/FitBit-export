@@ -99,8 +99,10 @@ To track a workout, add its public Hevy link to the workout notes in Google Heal
 
    ```bash
    #!/bin/bash
-   curl -fsSL -o /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-   apt-get install -y /tmp/chrome.deb
+   command -v google-chrome >/dev/null && exit 0
+   apt-get update || true
+   curl -fsSL -o /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb || true
+   apt-get install -y /tmp/chrome.deb || true
    ```
 
 7. Add these environment variables:
