@@ -1,6 +1,6 @@
 # FitBit Export
 
-A small Go CLI that reads your Fitbit data from the Google Health API and prints a daily JSON report. The report covers sleep, recovery, activity, workouts, weight, and nutrition.
+A small Go CLI that reads your Fitbit data from the Google Health API and prints a daily JSON report. The report covers sleep, recovery, activity, and workouts. A separate `strength` command adds strength workouts, weight, and nutrition.
 
 You can also run it every day in a Claude Code scheduled task. Claude reads the report and sends you short advice in Telegram.
 
@@ -76,7 +76,15 @@ Print your recent strength workouts:
 go run ./cmd/fitbit-export strength
 ```
 
-To track a workout, add its public Hevy link to the workout notes in Google Health, for example `https://hevy.com/workout/abc123`. The record must be one that returns `notes` from the API, and its date must match the workout. The command opens each link in headless Chrome, reads the sets, and calculates volume and estimated one-rep max. It covers the last 12 linked workouts from the past 90 days.
+To track a workout, add what you did to the workout notes in Google Health as plain text, for example:
+
+```text
+Bench Press (Barbell)
+Set 1: 80 kg x 12
+Set 2: 90 kg x 6
+```
+
+The record must be one that returns `notes` from the API, and its date must match the workout. The command returns your last 12 strength workouts with notes from the past 90 days, your latest weight, and today's nutrition. The `strength-coach` skill reads the text and does the analysis.
 
 ## Set up daily advice
 
@@ -90,22 +98,9 @@ To track a workout, add its public Hevy link to the workout notes in Google Heal
    health.googleapis.com
    oauth2.googleapis.com
    api.telegram.org
-   dl.google.com
-   hevy.com
-   api.hevyapp.com
    ```
 
-6. Add this setup script. It installs Chrome for the `strength` command:
-
-   ```bash
-   #!/bin/bash
-   command -v google-chrome >/dev/null && exit 0
-   apt-get update || true
-   curl -fsSL -o /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb || true
-   apt-get install -y /tmp/chrome.deb || true
-   ```
-
-7. Add these environment variables:
+6. Add these environment variables:
 
    ```env
    GOOGLE_HEALTH_CLIENT_ID=...
@@ -115,16 +110,16 @@ To track a workout, add its public Hevy link to the workout notes in Google Heal
    TELEGRAM_CHAT_ID=...
    ```
 
-8. Create a daily scheduled task at [claude.ai/code/routines](https://claude.ai/code/routines).
-9. Select your repository and the new cloud environment, then remove any connectors you do not need.
-10. Use this prompt:
+7. Create a daily scheduled task at [claude.ai/code/routines](https://claude.ai/code/routines).
+8. Select your repository and the new cloud environment, then remove any connectors you do not need.
+9. Use this prompt:
 
    ```text
    Run the fitbit-advice skill, then run the strength-coach skill.
    My goals: <your goals>.
    ```
 
-11. Click **Run now** and check that the message arrives in Telegram. The `strength-coach` skill sends a second message only on days with a linked workout.
+10. Click **Run now** and check that the message arrives in Telegram. The `strength-coach` skill sends a second message only on days with a logged strength workout.
 
 ## Customize
 
@@ -139,9 +134,7 @@ To track a workout, add its public Hevy link to the workout notes in Google Heal
 
 - **`OAuth refresh returned HTTP 400`:** the refresh token has expired, or the run cannot see your variables. Check that the task uses the right cloud environment, then run `auth` again if needed.
 - **Telegram returns `403` in a cloud run:** allow `api.telegram.org` in the environment used by the task.
-- **`chrome is not installed`:** check the setup script and allow `dl.google.com`.
 - **`nutrition` is in `unavailable`:** add the nutrition scope, run `auth` again, and update the refresh token in the cloud environment.
-- **A workout has an `error`:** open the Hevy link and check that the page is public. Hevy may also have changed its page layout.
 
 ## Privacy
 

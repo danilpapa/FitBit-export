@@ -2,111 +2,58 @@ package report
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
-const hevyPage = `<!DOCTYPE html><html><head><title>athlete | Тяжёлый день</title>
-<script>{"reps": 999}</script><style>.set { color: red }</style></head><body>
-<div>Log in</div><div>Yesterday at 18:52</div><div>Duration</div><div>1h 20min</div><div>Volume</div><div>3&nbsp;000 kg</div>
-<div>Squat (Barbell)</div><div>SETS</div><div>WEIGHT &amp; REPS</div>
-<div>W</div><div>60kg x 8 reps</div>
-<div>1</div><div>100kg x 5 reps</div><div>Best Volume</div>
-<div>F</div><div>102,5kg x 5 reps</div>
-<div>Pull Up</div><div>SETS</div><div>REPS</div>
-<div>1</div><div>12 reps</div>
-<div>2</div><div>1min 30s</div>
-<div>Bent Over Row (Barbell)</div><div>ПОДХОДЫ</div><div>ВЕС И ПОВТОРЕНИЯ</div>
-<div>1</div><div>60 кг x 15 повторений</div>
-<div>2</div><div>70 кг x 8 повторений</div>
-<div>To follow athlete and track your own workouts, download Hevy for free.</div>
-<div>Workouts</div><div>3</div><div>Followers</div><div>1</div><div>Following</div></body></html>`
-
-func strengthPoint(start string, notes string) string {
+func strengthPoint(start string, exerciseType string, notes string) string {
 	return fmt.Sprintf(`{"exercise":{"interval":{"startTime":"%s","startUtcOffset":"10800s","endTime":"%s","endUtcOffset":"10800s"},
-		"exerciseType":"STRENGTH_TRAINING","displayName":"Силовая","notes":%q,"activeDuration":"3600s","metricsSummary":{}}}`,
-		start, start, notes)
+		"exerciseType":"%s","displayName":"Силовая","notes":%q,"activeDuration":"3600s","metricsSummary":{}}}`,
+		start, start, exerciseType, notes)
 }
 
-func TestParseHevyPage(t *testing.T) {
-	workout := parseHevyPage(hevyPage)
-
-	if workout.Title != "Тяжёлый день" {
-		t.Fatalf("Title = %q", workout.Title)
-	}
-	if len(workout.Exercises) != 3 {
-		t.Fatalf("Exercises = %+v, want 3", workout.Exercises)
-	}
-
-	squat := workout.Exercises[0]
-	if squat.Name != "Squat (Barbell)" || len(squat.Sets) != 3 {
-		t.Fatalf("squat = %+v", squat)
-	}
-	if squat.Sets[0].Type != "warmup" {
-		t.Fatalf("first set = %+v, want a warmup", squat.Sets[0])
-	}
-	if want := (StrengthSet{WeightKg: 102.5, Reps: 5, Type: "failure"}); squat.Sets[2] != want {
-		t.Fatalf("last set = %+v, want %+v", squat.Sets[2], want)
-	}
-	if squat.VolumeKg != 1012.5 || squat.BestE1RMKg != 119.6 {
-		t.Fatalf("squat volume = %v, e1RM = %v, want no warmup", squat.VolumeKg, squat.BestE1RMKg)
-	}
+func weightPoint(physicalTime string, grams int) string {
+	return fmt.Sprintf(`{"weight":{"sampleTime":{"physicalTime":"%s","utcOffset":"10800s"},"weightGrams":%d}}`, physicalTime, grams)
 }
 
-func TestParseHevyPageKeepsUnknownSets(t *testing.T) {
-	workout := parseHevyPage(hevyPage)
-
-	pullUp := workout.Exercises[1]
-	if len(pullUp.Sets) != 1 || pullUp.Sets[0].Reps != 12 || pullUp.Sets[0].WeightKg != 0 {
-		t.Fatalf("pull up = %+v", pullUp)
-	}
-	if len(workout.UnparsedLines) != 1 || workout.UnparsedLines[0] != "1min 30s" {
-		t.Fatalf("UnparsedLines = %v", workout.UnparsedLines)
-	}
+func nutritionPoint(day int, kcal float64, protein float64) string {
+	return fmt.Sprintf(`{"civilStartTime":{"date":%s,"time":{}},"nutritionLog":{"energy":{"kcalSum":%v},
+		"totalCarbohydrate":{"gramsSum":250.4},"totalFat":{"gramsSum":70},
+		"nutrients":[{"nutrient":"SUGAR","quantity":{"gramsSum":40}},{"nutrient":"PROTEIN","quantity":{"gramsSum":%v}}]}}`,
+		date(day), kcal, protein)
 }
 
-func TestEstimatedMaxSkipsLongSets(t *testing.T) {
-	row := parseHevyPage(hevyPage).Exercises[2]
+func buildStrength(t *testing.T, source fakeSource) StrengthLog {
+	t.Helper()
 
-	if row.BestE1RMKg != 88.7 {
-		t.Fatalf("row e1RM = %v, want 88.7 from the set of 8", row.BestE1RMKg)
-	}
-	if got := (StrengthSet{WeightKg: 90, Reps: 1}).estimatedMax(); got != 90 {
-		t.Fatalf("single = %v, want the lifted weight", got)
-	}
-}
-
-func TestBuildStrengthLogLoadsLinkedWorkoutsInOrder(t *testing.T) {
-	var loaded []string
-	load := func(_ context.Context, url string) (string, error) {
-		loaded = append(loaded, url)
-		return hevyPage, nil
-	}
-	filters := map[string]string{}
-	source := fakeSource{
-		lists: map[string][]string{"exercise": {
-			strengthPoint("2026-10-30T15:00:00Z", "https://hevy.com/workout/newer"),
-			strengthPoint("2026-10-20T15:00:00Z", "заметка https://hevy.com/workout/older"),
-			strengthPoint("2026-10-25T15:00:00Z", "тест"),
-		}},
-		filters: filters,
-	}
-
-	log, err := BuildStrengthLog(context.Background(), source, load, Clock{Now: testNow}, StrengthHistoryDays)
+	log, err := BuildStrengthLog(context.Background(), source, Clock{Now: testNow}, StrengthHistoryDays)
 	if err != nil {
 		t.Fatalf("BuildStrengthLog() error = %v", err)
 	}
+	return log
+}
+
+func TestBuildStrengthLogKeepsLoggedStrengthWorkouts(t *testing.T) {
+	filters := map[string]string{}
+	log := buildStrength(t, fakeSource{
+		lists: map[string][]string{"exercise": {
+			strengthPoint("2026-10-30T15:00:00Z", "POWERLIFTING", "Присед\nСет 1: 100 kg x 5"),
+			strengthPoint("2026-10-20T15:00:00Z", "STRENGTH_TRAINING", "жим 80 на 8"),
+			strengthPoint("2026-10-25T15:00:00Z", "POWERLIFTING", ""),
+			strengthPoint("2026-10-26T15:00:00Z", "WALKING", "тест"),
+		}},
+		filters: filters,
+	})
 
 	if len(log.Workouts) != 2 {
-		t.Fatalf("Workouts = %+v, want only linked workouts", log.Workouts)
+		t.Fatalf("Workouts = %+v, want only strength workouts with text", log.Workouts)
 	}
-	if want := "https://hevy.com/workout/older"; log.Workouts[0].URL != want || loaded[0] != want {
-		t.Fatalf("first workout = %s, loaded = %v, want the oldest first", log.Workouts[0].URL, loaded)
-	}
-	if log.Workouts[0].Minutes != 60 {
-		t.Fatalf("Minutes = %v", log.Workouts[0].Minutes)
+	if log.Workouts[0].Notes != "жим 80 на 8" || log.Workouts[1].Notes != "Присед\nСет 1: 100 kg x 5" {
+		t.Fatalf("Workouts = %+v, want the oldest first", log.Workouts)
 	}
 
 	want := `exercise.interval.civil_start_time >= "2026-08-03T00:00:00" AND ` +
@@ -120,80 +67,130 @@ func TestBuildStrengthLogKeepsRecentWorkouts(t *testing.T) {
 	var points []string
 	for day := 1; day <= maxStrengthWorkouts+3; day++ {
 		start := fmt.Sprintf("2026-10-%02dT15:00:00Z", day)
-		points = append(points, strengthPoint(start, fmt.Sprintf("https://hevy.com/workout/w%d", day)))
+		points = append(points, strengthPoint(start, "POWERLIFTING", fmt.Sprintf("день %d", day)))
 	}
-	load := func(context.Context, string) (string, error) { return hevyPage, nil }
 
-	log, err := BuildStrengthLog(context.Background(), fakeSource{lists: map[string][]string{"exercise": points}}, load, Clock{Now: testNow}, StrengthHistoryDays)
-	if err != nil {
-		t.Fatalf("BuildStrengthLog() error = %v", err)
-	}
+	log := buildStrength(t, fakeSource{lists: map[string][]string{"exercise": points}})
 
 	if len(log.Workouts) != maxStrengthWorkouts {
 		t.Fatalf("Workouts = %d, want %d", len(log.Workouts), maxStrengthWorkouts)
 	}
-	if got := log.Workouts[0].URL; !strings.HasSuffix(got, "/w4") {
+	if got := log.Workouts[0].Notes; got != "день 4" {
 		t.Fatalf("first workout = %s, want the oldest kept one", got)
 	}
 }
 
-func TestBuildStrengthLogLoadsRepeatedLinkOnce(t *testing.T) {
-	loads := 0
-	load := func(context.Context, string) (string, error) {
-		loads++
-		return hevyPage, nil
-	}
-	source := fakeSource{lists: map[string][]string{"exercise": {
-		strengthPoint("2026-10-03T15:00:00Z", "https://hevy.com/workout/same"),
-		strengthPoint("2026-10-30T15:00:00Z", "https://hevy.com/workout/same"),
-	}}}
+func TestBuildStrengthLogUsesLatestWeighIn(t *testing.T) {
+	filters := map[string]string{}
+	log := buildStrength(t, fakeSource{
+		lists: map[string][]string{"weight": {
+			weightPoint("2026-10-25T06:00:00Z", 78000),
+			weightPoint("2026-10-30T06:00:00.5Z", 77040),
+			weightPoint("2026-10-28T06:00:00Z", 77000),
+		}},
+		filters: filters,
+	})
 
-	log, err := BuildStrengthLog(context.Background(), source, load, Clock{Now: testNow}, StrengthHistoryDays)
-	if err != nil {
-		t.Fatalf("BuildStrengthLog() error = %v", err)
+	body := log.Body
+	if *body.WeightKg.Value != 77 {
+		t.Fatalf("weight = %v, want the newest weigh-in", *body.WeightKg.Value)
 	}
-
-	if loads != 1 || len(log.Workouts) != 1 {
-		t.Fatalf("loads = %d, Workouts = %+v, want one workout", loads, log.Workouts)
+	if *body.WeightKg.Avg7d != 77.3 {
+		t.Fatalf("weight week = %v, want 77.3", *body.WeightKg.Avg7d)
 	}
-	if got := log.Workouts[0].StartedAt.Format("2006-01-02"); got != "2026-10-30" {
-		t.Fatalf("StartedAt = %s, want the newest record", got)
-	}
-}
-
-func TestBuildStrengthLogKeepsFailedPage(t *testing.T) {
-	load := func(context.Context, string) (string, error) { return "", errors.New("page is incomplete") }
-	source := fakeSource{lists: map[string][]string{"exercise": {
-		strengthPoint("2026-10-30T15:00:00Z", "https://hevy.com/workout/broken"),
-	}}}
-
-	log, err := BuildStrengthLog(context.Background(), source, load, Clock{Now: testNow}, StrengthHistoryDays)
-	if err != nil {
-		t.Fatalf("BuildStrengthLog() error = %v", err)
+	if got := body.WeighedAt.Format(time.RFC3339); got != "2026-10-30T09:00:00+03:00" {
+		t.Fatalf("WeighedAt = %s", got)
 	}
 
-	workout := log.Workouts[0]
-	if workout.Error == "" || workout.URL == "" || workout.Exercises == nil {
-		t.Fatalf("workout = %+v", workout)
+	want := `weight.sample_time.civil_time >= "2026-10-01T00:00:00" AND ` +
+		`weight.sample_time.civil_time < "2026-11-01T00:00:00"`
+	if filters["weight"] != want {
+		t.Fatalf("filter = %s, want %s", filters["weight"], want)
 	}
 }
 
-func TestBuildStrengthLogEmptyIsNotNull(t *testing.T) {
-	load := func(context.Context, string) (string, error) { return "", nil }
+func TestBuildStrengthLogLoadsNutrition(t *testing.T) {
+	log := buildStrength(t, fakeSource{
+		rollups: map[string][]string{"nutrition-log": {
+			nutritionPoint(31, 2400.4, 150.6),
+			nutritionPoint(30, 2000, 120),
+			nutritionPoint(29, 2200, 140),
+		}},
+	})
 
-	log, err := BuildStrengthLog(context.Background(), fakeSource{}, load, Clock{Now: testNow}, StrengthHistoryDays)
-	if err != nil {
-		t.Fatalf("BuildStrengthLog() error = %v", err)
+	calories := log.Nutrition["calories_kcal"]
+	if *calories.Value != 2400 || *calories.Avg7d != 2100 {
+		t.Fatalf("calories = %v / %v", *calories.Value, *calories.Avg7d)
 	}
-	if log.Workouts == nil {
-		t.Fatal("Workouts = nil, want an empty list")
+	if got := *log.Nutrition["protein_g"].Value; got != 151 {
+		t.Fatalf("protein = %v, want 151", got)
+	}
+	if got := *log.Nutrition["carbs_g"].Value; got != 250 {
+		t.Fatalf("carbs = %v", got)
+	}
+	if got := *log.Nutrition["fat_g"].Value; got != 70 {
+		t.Fatalf("fat = %v", got)
 	}
 }
 
-func TestBuildStrengthLogReturnsSourceError(t *testing.T) {
-	load := func(context.Context, string) (string, error) { return "", nil }
+func TestBuildStrengthLogLeavesEmptyNutritionDayUnset(t *testing.T) {
+	log := buildStrength(t, fakeSource{
+		rollups: map[string][]string{"nutrition-log": {
+			fmt.Sprintf(`{"civilStartTime":{"date":%s,"time":{}}}`, date(31)),
+			nutritionPoint(30, 2000, 120),
+		}},
+	})
 
-	if _, err := BuildStrengthLog(context.Background(), fakeSource{failAll: true}, load, Clock{Now: testNow}, StrengthHistoryDays); err == nil {
+	calories := log.Nutrition["calories_kcal"]
+	if calories.Value != nil {
+		t.Fatalf("calories = %v, want no food logged today", *calories.Value)
+	}
+	if *calories.Avg7d != 2000 {
+		t.Fatalf("calories week = %v", *calories.Avg7d)
+	}
+}
+
+func TestBuildStrengthLogKeepsWorkoutsWithoutBodyData(t *testing.T) {
+	log := buildStrength(t, fakeSource{
+		failing: map[string]bool{"weight": true, "nutrition-log": true},
+		lists: map[string][]string{"exercise": {
+			strengthPoint("2026-10-30T15:00:00Z", "POWERLIFTING", "Присед"),
+		}},
+	})
+
+	if want := []string{"weight", "nutrition"}; !slices.Equal(log.Unavailable, want) {
+		t.Fatalf("Unavailable = %v, want %v", log.Unavailable, want)
+	}
+	if len(log.Workouts) != 1 {
+		t.Fatalf("Workouts = %+v", log.Workouts)
+	}
+	if metric, ok := log.Nutrition["protein_g"]; !ok || metric.Value != nil {
+		t.Fatalf("protein = %+v, want a null metric", metric)
+	}
+}
+
+func TestBuildStrengthLogReturnsWorkoutError(t *testing.T) {
+	_, err := BuildStrengthLog(context.Background(), fakeSource{failAll: true}, Clock{Now: testNow}, StrengthHistoryDays)
+	if err == nil {
 		t.Fatal("BuildStrengthLog() error = nil")
+	}
+}
+
+func TestStrengthLogJSON(t *testing.T) {
+	encoded, err := json.Marshal(buildStrength(t, fakeSource{}))
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	text := string(encoded)
+
+	for _, want := range []string{
+		`"unavailable":[]`,
+		`"workouts":[]`,
+		`"body":{"weight_kg":{"value":null,"avg_7d":null},"weighed_at":null}`,
+		`"calories_kcal":{"value":null,"avg_7d":null}`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("JSON has no %s:\n%s", want, text)
+		}
 	}
 }
