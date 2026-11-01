@@ -84,7 +84,7 @@ Set 1: 80 kg x 12
 Set 2: 90 kg x 6
 ```
 
-The record must be one that returns `notes` from the API, and its date must match the workout. The command returns your last 12 strength workouts with notes from the past 90 days, your latest weight, and today's nutrition. The `strength-coach` skill reads the text and does the analysis.
+The record must be one that returns `notes` from the API, and its date must match the workout. The command returns your last 6 strength workouts with notes from the past 90 days, your latest weight, and today's nutrition. The `strength-coach` skill reads the text and does the analysis.
 
 ## Set up daily advice
 
@@ -110,20 +110,22 @@ The record must be one that returns `notes` from the API, and its date must matc
    TELEGRAM_CHAT_ID=...
    ```
 
-7. Create a daily scheduled task at [claude.ai/code/routines](https://claude.ai/code/routines).
-8. Select your repository and the new cloud environment, then remove any connectors you do not need.
-9. Use this prompt:
+7. Create a private repository named `fitbit-memory` with a README. The skills keep short weekly summaries there so that each run stays small. Never make this repository public.
+8. Create a daily scheduled task at [claude.ai/code/routines](https://claude.ai/code/routines).
+9. Select both repositories and the new cloud environment, then remove any connectors you do not need.
+10. Use this prompt:
 
    ```text
    Run the fitbit-advice skill, then run the strength-coach skill.
    My goals: <your goals>.
+   My training cycle: <for example, chest and biceps, legs and shoulders, back and triceps>.
    ```
 
-10. Click **Run now** and check that the message arrives in Telegram. The `strength-coach` skill sends a second message only on days with a logged strength workout.
+11. Click **Run now** and check that the message arrives in Telegram. The `strength-coach` skill sends a second message only on days with a logged strength workout.
 
 ## Customize
 
-- **Goals:** edit the prompt of your scheduled task.
+- **Goals and training cycle:** edit the prompt of your scheduled task.
 - **Schedule:** change the task time. Run it late in the evening so the report covers most of the day.
 - **Advice:** edit `.claude/skills/fitbit-advice/SKILL.md`.
 - **Strength coaching:** edit `.claude/skills/strength-coach/SKILL.md`.

@@ -11,7 +11,7 @@ import (
 const (
 	StrengthHistoryDays = 90
 
-	maxStrengthWorkouts = 12
+	maxStrengthWorkouts = 6
 	weightLookbackDays  = 30
 )
 
