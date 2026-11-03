@@ -63,7 +63,7 @@ func Login(ctx context.Context, cfg config.Config) (Result, error) {
 		authorizeURL: authorizeURL,
 		tokenURL:     httpclient.TokenURL,
 		redirectURL:  redirectURL,
-		open:         openBrowser,
+		open:         OpenBrowser,
 	}
 	return f.run(ctx, cfg, listener)
 }
@@ -212,7 +212,7 @@ func randomString() string {
 	return base64.RawURLEncoding.EncodeToString(buffer)
 }
 
-func openBrowser(target string) error {
+func OpenBrowser(target string) error {
 	log.Printf("sign in at: %s", target)
 
 	command := "xdg-open"

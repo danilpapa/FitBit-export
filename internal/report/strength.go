@@ -6,6 +6,8 @@ import (
 	"log"
 	"slices"
 	"time"
+
+	"fitbit-export/internal/fatsecret"
 )
 
 const (
@@ -34,7 +36,13 @@ type Body struct {
 	WeighedAt *time.Time `json:"weighed_at"`
 }
 
-func BuildStrengthLog(ctx context.Context, source Source, clock Clock, days int) (StrengthLog, error) {
+// NutritionSource replaces Google Health as the source of daily nutrition totals.
+type NutritionSource interface {
+	DailyTotals(ctx context.Context, start time.Time, end time.Time) ([]fatsecret.Day, error)
+}
+
+// BuildStrengthLog reads nutrition from Google Health when nutrition is nil.
+func BuildStrengthLog(ctx context.Context, source Source, nutrition NutritionSource, clock Clock, days int) (StrengthLog, error) {
 	day := startOfDay(clock.Now)
 	end := day.AddDate(0, 0, 1)
 
@@ -60,7 +68,7 @@ func BuildStrengthLog(ctx context.Context, source Source, clock Clock, days int)
 	}
 	result.Body = body
 
-	series, err := loadNutrition(ctx, source, day, end)
+	series, err := loadNutrition(ctx, source, nutrition, day, end)
 	if err != nil {
 		result.markUnavailable("nutrition", err)
 	}
@@ -113,12 +121,41 @@ func loadBody(ctx context.Context, source Source, day time.Time, end time.Time) 
 	}, nil
 }
 
-func loadNutrition(ctx context.Context, source Source, day time.Time, end time.Time) (map[string]map[string]float64, error) {
-	points, err := source.DailyRollUp(ctx, "nutrition-log", day.AddDate(0, 0, -weekDays), end)
+func loadNutrition(
+	ctx context.Context,
+	source Source,
+	nutrition NutritionSource,
+	day time.Time,
+	end time.Time,
+) (map[string]map[string]float64, error) {
+	start := day.AddDate(0, 0, -weekDays)
+	if nutrition == nil {
+		points, err := source.DailyRollUp(ctx, "nutrition-log", start, end)
+		if err != nil {
+			return nil, err
+		}
+		return decodeNutrition(points)
+	}
+
+	totals, err := nutrition.DailyTotals(ctx, start, end)
 	if err != nil {
 		return nil, err
 	}
-	return decodeNutrition(points)
+	series := map[string]map[string]float64{}
+	for _, total := range totals {
+		for key, value := range map[string]float64{
+			caloriesKey: total.CaloriesKcal,
+			proteinKey:  total.ProteinG,
+			carbsKey:    total.CarbsG,
+			fatKey:      total.FatG,
+		} {
+			if series[key] == nil {
+				series[key] = map[string]float64{}
+			}
+			series[key][total.Date] = value
+		}
+	}
+	return series, nil
 }
 
 func workoutFilter(start time.Time, end time.Time) string {

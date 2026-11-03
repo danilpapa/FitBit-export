@@ -3,11 +3,14 @@ package report
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"fitbit-export/internal/fatsecret"
 )
 
 func strengthPoint(start string, exerciseType string, notes string) string {
@@ -27,10 +30,29 @@ func nutritionPoint(day int, kcal float64, protein float64) string {
 		date(day), kcal, protein)
 }
 
+type fakeNutrition struct {
+	days  []fatsecret.Day
+	err   error
+	start *time.Time
+	end   *time.Time
+}
+
+func (f fakeNutrition) DailyTotals(_ context.Context, start time.Time, end time.Time) ([]fatsecret.Day, error) {
+	if f.start != nil {
+		*f.start, *f.end = start, end
+	}
+	return f.days, f.err
+}
+
 func buildStrength(t *testing.T, source fakeSource) StrengthLog {
 	t.Helper()
+	return buildStrengthWith(t, source, nil)
+}
 
-	log, err := BuildStrengthLog(context.Background(), source, Clock{Now: testNow}, StrengthHistoryDays)
+func buildStrengthWith(t *testing.T, source fakeSource, nutrition NutritionSource) StrengthLog {
+	t.Helper()
+
+	log, err := BuildStrengthLog(context.Background(), source, nutrition, Clock{Now: testNow}, StrengthHistoryDays)
 	if err != nil {
 		t.Fatalf("BuildStrengthLog() error = %v", err)
 	}
@@ -150,6 +172,46 @@ func TestBuildStrengthLogLeavesEmptyNutritionDayUnset(t *testing.T) {
 	}
 }
 
+func TestBuildStrengthLogUsesFatSecretNutrition(t *testing.T) {
+	var start, end time.Time
+	log := buildStrengthWith(t, fakeSource{
+		failing: map[string]bool{"nutrition-log": true},
+	}, fakeNutrition{
+		days: []fatsecret.Day{
+			{Date: "2026-10-31", CaloriesKcal: 2400.4, ProteinG: 150.6, CarbsG: 250.4, FatG: 70},
+			{Date: "2026-10-30", CaloriesKcal: 2000, ProteinG: 120, CarbsG: 200, FatG: 60},
+			{Date: "2026-10-29", CaloriesKcal: 2200, ProteinG: 140, CarbsG: 220, FatG: 80},
+		},
+		start: &start,
+		end:   &end,
+	})
+
+	if len(log.Unavailable) != 0 {
+		t.Fatalf("Unavailable = %v, want Google nutrition left unused", log.Unavailable)
+	}
+	calories := log.Nutrition["calories_kcal"]
+	if *calories.Value != 2400 || *calories.Avg7d != 2100 {
+		t.Fatalf("calories = %v / %v", *calories.Value, *calories.Avg7d)
+	}
+	if got := *log.Nutrition["protein_g"].Value; got != 151 {
+		t.Fatalf("protein = %v, want 151", got)
+	}
+	if got := *log.Nutrition["fat_g"].Avg7d; got != 70 {
+		t.Fatalf("fat week = %v, want 70", got)
+	}
+	if start.Format(time.DateOnly) != "2026-10-24" || end.Format(time.DateOnly) != "2026-11-01" {
+		t.Fatalf("range = %s..%s, want the past week and today", start, end)
+	}
+}
+
+func TestBuildStrengthLogMarksFatSecretFailure(t *testing.T) {
+	log := buildStrengthWith(t, fakeSource{}, fakeNutrition{err: errors.New("FatSecret error 21")})
+
+	if want := []string{"nutrition"}; !slices.Equal(log.Unavailable, want) {
+		t.Fatalf("Unavailable = %v, want %v", log.Unavailable, want)
+	}
+}
+
 func TestBuildStrengthLogKeepsWorkoutsWithoutBodyData(t *testing.T) {
 	log := buildStrength(t, fakeSource{
 		failing: map[string]bool{"weight": true, "nutrition-log": true},
@@ -170,7 +232,7 @@ func TestBuildStrengthLogKeepsWorkoutsWithoutBodyData(t *testing.T) {
 }
 
 func TestBuildStrengthLogReturnsWorkoutError(t *testing.T) {
-	_, err := BuildStrengthLog(context.Background(), fakeSource{failAll: true}, Clock{Now: testNow}, StrengthHistoryDays)
+	_, err := BuildStrengthLog(context.Background(), fakeSource{failAll: true}, nil, Clock{Now: testNow}, StrengthHistoryDays)
 	if err == nil {
 		t.Fatal("BuildStrengthLog() error = nil")
 	}

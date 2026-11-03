@@ -12,12 +12,27 @@ import (
 const (
 	envFile         = ".env"
 	refreshTokenKey = "GOOGLE_HEALTH_REFRESH_TOKEN"
+
+	fatSecretTokenKey  = "FATSECRET_ACCESS_TOKEN"
+	fatSecretSecretKey = "FATSECRET_ACCESS_SECRET"
 )
 
 type Config struct {
 	ClientID     string
 	ClientSecret string
 	RefreshToken string
+	FatSecret    FatSecret
+}
+
+type FatSecret struct {
+	ConsumerKey    string
+	ConsumerSecret string
+	AccessToken    string
+	AccessSecret   string
+}
+
+func (f FatSecret) Linked() bool {
+	return f.ConsumerKey != "" && f.ConsumerSecret != "" && f.AccessToken != "" && f.AccessSecret != ""
 }
 
 func Load() Config {
@@ -27,11 +42,24 @@ func Load() Config {
 		ClientID:     os.Getenv("GOOGLE_HEALTH_CLIENT_ID"),
 		ClientSecret: os.Getenv("GOOGLE_HEALTH_CLIENT_SECRET"),
 		RefreshToken: os.Getenv(refreshTokenKey),
+		FatSecret: FatSecret{
+			ConsumerKey:    os.Getenv("FATSECRET_CONSUMER_KEY"),
+			ConsumerSecret: os.Getenv("FATSECRET_CONSUMER_SECRET"),
+			AccessToken:    os.Getenv(fatSecretTokenKey),
+			AccessSecret:   os.Getenv(fatSecretSecretKey),
+		},
 	}
 }
 
 func SaveRefreshToken(token string) error {
 	return saveEnvValue(envFile, refreshTokenKey, token)
+}
+
+func SaveFatSecretToken(token string, secret string) error {
+	if err := saveEnvValue(envFile, fatSecretTokenKey, token); err != nil {
+		return err
+	}
+	return saveEnvValue(envFile, fatSecretSecretKey, secret)
 }
 
 func saveEnvValue(path string, key string, value string) error {

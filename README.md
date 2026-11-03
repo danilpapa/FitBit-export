@@ -56,6 +56,8 @@ The nutrition scope is restricted, so Google shows a verification notice. If onl
 
 ## Use the CLI
 
+Run `make` in the project root to see short commands for everything below, for example `make strength` or `make note TEXT="Slept badly"`.
+
 Print today's report:
 
 ```bash
@@ -86,6 +88,29 @@ Set 2: 90 kg x 6
 
 The record must be one that returns `notes` from the API, and its date must match the workout. The command returns your last 6 strength workouts with notes from the past 90 days, your latest weight, and today's nutrition. The `strength-coach` skill reads the text and does the analysis.
 
+## Read nutrition from FatSecret (optional)
+
+By default, nutrition comes from Google Health. If you log food in FatSecret instead, the `strength` command can read your daily totals from the FatSecret food diary.
+
+1. Sign up at [platform.fatsecret.com](https://platform.fatsecret.com) and create an app. The free Basic edition is enough.
+2. Make sure your FatSecret mobile app uses a fatsecret.com account with an email and password.
+3. Add the app keys to `.env`:
+
+   ```env
+   FATSECRET_CONSUMER_KEY=your-consumer-key
+   FATSECRET_CONSUMER_SECRET=your-consumer-secret
+   ```
+
+4. Link your account. This opens FatSecret in your browser. Allow access, copy the verification code, and paste it in the terminal. The command saves `FATSECRET_ACCESS_TOKEN` and `FATSECRET_ACCESS_SECRET` to `.env`:
+
+   ```bash
+   go run ./cmd/fitbit-export fatsecret-auth
+   ```
+
+5. Run `go run ./cmd/fitbit-export strength` and check `nutrition_today`.
+
+When all four FatSecret values are set, `strength` reads nutrition from FatSecret and weight from Google Health.
+
 ## Set up daily advice
 
 1. Fork this repository.
@@ -110,22 +135,34 @@ The record must be one that returns `notes` from the API, and its date must matc
    TELEGRAM_CHAT_ID=...
    ```
 
-7. Create a private repository named `fitbit-memory` with a README. The skills keep short weekly summaries there so that each run stays small. Never make this repository public.
-8. Create a daily scheduled task at [claude.ai/code/routines](https://claude.ai/code/routines).
-9. Select both repositories and the new cloud environment, then remove any connectors you do not need.
-10. Use this prompt:
+   If you use FatSecret, also allow `platform.fatsecret.com` and add the four `FATSECRET_*` values from `.env`.
+
+7. Create a private repository named `fitbit-memory`. Never make this repository public. The skills keep short summaries there, plus an archive of daily reports, sent advice, and analyzed workouts.
+8. Add `profile.md` to the root of `fitbit-memory` with your goals, training cycle, preferences, and injuries, for example:
+
+   ```markdown
+   # Profile
+   ## Goals
+   - Build muscle and strength.
+   ## Training cycle
+   1. Chest and biceps
+   2. Back and triceps
+   3. Legs and shoulders
+   ```
+
+9. Create a daily scheduled task at [claude.ai/code/routines](https://claude.ai/code/routines).
+10. Select both repositories and the new cloud environment, then remove any connectors you do not need.
+11. Use this prompt:
 
    ```text
    Run the fitbit-advice skill, then run the strength-coach skill.
-   My goals: <your goals>.
-   My training cycle: <for example, chest and biceps, legs and shoulders, back and triceps>.
    ```
 
-11. Click **Run now** and check that the message arrives in Telegram. The `strength-coach` skill sends a second message only on days with a logged strength workout.
+12. Click **Run now** and check that the message arrives in Telegram. The `strength-coach` skill sends a second message only on days with a logged strength workout.
 
 ## Customize
 
-- **Goals and training cycle:** edit the prompt of your scheduled task.
+- **Goals and training cycle:** edit `profile.md` in `fitbit-memory`. Anything you add to the task prompt takes priority over it.
 - **Schedule:** change the task time. Run it late in the evening so the report covers most of the day.
 - **Advice:** edit `.claude/skills/fitbit-advice/SKILL.md`.
 - **Strength coaching:** edit `.claude/skills/strength-coach/SKILL.md`.
@@ -137,9 +174,10 @@ The record must be one that returns `notes` from the API, and its date must matc
 - **`OAuth refresh returned HTTP 400`:** the refresh token has expired, or the run cannot see your variables. Check that the task uses the right cloud environment, then run `auth` again if needed.
 - **Telegram returns `403` in a cloud run:** allow `api.telegram.org` in the environment used by the task.
 - **`nutrition` is in `unavailable`:** add the nutrition scope, run `auth` again, and update the refresh token in the cloud environment.
+- **FatSecret error in the log:** error `9` means the access token is no longer valid, so run `fatsecret-auth` again. Error `21` means FatSecret rejected the IP address of the run.
 
 ## Privacy
 
-Your health data goes to Anthropic and Telegram when you use daily advice. Never commit `.env`, reports, or personal health data to a public repository.
+Your health data goes to Anthropic and Telegram when you use daily advice. The CLI only reads your FatSecret diary and never changes it. Never commit `.env`, reports, or personal health data to a public repository.
 
 The advice is not medical advice.

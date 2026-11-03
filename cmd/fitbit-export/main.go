@@ -13,6 +13,7 @@ import (
 
 	"fitbit-export/internal/auth"
 	"fitbit-export/internal/config"
+	"fitbit-export/internal/fatsecret"
 	"fitbit-export/internal/googlehealth"
 	"fitbit-export/internal/httpclient"
 	"fitbit-export/internal/report"
@@ -37,6 +38,9 @@ func run(ctx context.Context, args []string) error {
 	if command == "auth" {
 		return runAuth(ctx, cfg)
 	}
+	if command == "fatsecret-auth" {
+		return runFatSecretAuth(ctx, cfg)
+	}
 
 	client := googlehealth.New(httpclient.New(cfg))
 	clock := report.DeviceClock(ctx, client, time.Now())
@@ -44,7 +48,11 @@ func run(ctx context.Context, args []string) error {
 		return runNote(clock.Now, args[1:])
 	}
 	if command == "strength" {
-		log, err := report.BuildStrengthLog(ctx, client, clock, report.StrengthHistoryDays)
+		var nutrition report.NutritionSource
+		if cfg.FatSecret.Linked() {
+			nutrition = fatsecret.New(cfg.FatSecret)
+		}
+		log, err := report.BuildStrengthLog(ctx, client, nutrition, clock, report.StrengthHistoryDays)
 		if err != nil {
 			return err
 		}
@@ -78,6 +86,19 @@ func runAuth(ctx context.Context, cfg config.Config) error {
 		log.Printf("warning: scope not granted: %s", scope)
 	}
 	log.Print("refresh token saved to .env")
+	return nil
+}
+
+func runFatSecretAuth(ctx context.Context, cfg config.Config) error {
+	token, secret, err := fatsecret.New(cfg.FatSecret).Login(ctx, auth.OpenBrowser, os.Stdin, os.Stderr)
+	if err != nil {
+		return err
+	}
+	if err := config.SaveFatSecretToken(token, secret); err != nil {
+		return err
+	}
+
+	log.Print("FatSecret token saved to .env")
 	return nil
 }
 
