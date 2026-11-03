@@ -137,7 +137,7 @@ When all four FatSecret values are set, `strength` reads nutrition from FatSecre
 
    If you use FatSecret, also allow `platform.fatsecret.com` and add the four `FATSECRET_*` values from `.env`.
 
-7. Create a private repository named `fitbit-memory`. Never make this repository public. The skills keep short summaries there, plus an archive of daily reports, sent advice, and analyzed workouts.
+7. Create a private repository named `fitbit-memory`. Never make this repository public. The skills keep short summaries there, plus an archive of daily reports, sent advice, analyzed workouts, and daily nutrition.
 8. Add `profile.md` to the root of `fitbit-memory` with your goals, training cycle, preferences, and injuries, for example:
 
    ```markdown
@@ -155,10 +155,10 @@ When all four FatSecret values are set, `strength` reads nutrition from FatSecre
 11. Use this prompt:
 
    ```text
-   Run the fitbit-advice skill, then run the strength-coach skill.
+   Run the fitbit-advice skill, then the strength-coach skill, then the nutrition-coach skill.
    ```
 
-12. Click **Run now** and check that the message arrives in Telegram. The `strength-coach` skill sends a second message only on days with a logged strength workout.
+12. Click **Run now** and check that the message arrives in Telegram. The `strength-coach` skill sends a message only on days with a logged strength workout. The `nutrition-coach` skill reviews your food every day and links it to your training.
 
 ## Customize
 
@@ -166,6 +166,7 @@ When all four FatSecret values are set, `strength` reads nutrition from FatSecre
 - **Schedule:** change the task time. Run it late in the evening so the report covers most of the day.
 - **Advice:** edit `.claude/skills/fitbit-advice/SKILL.md`.
 - **Strength coaching:** edit `.claude/skills/strength-coach/SKILL.md`.
+- **Nutrition coaching:** edit `.claude/skills/nutrition-coach/SKILL.md`.
 - **Metrics:** edit `recoveryMetrics` and `activityMetrics` in `internal/report/report.go`.
 - **Public pages:** if you use GitHub Pages for Google publishing, replace the text and links in `docs/`.
 
