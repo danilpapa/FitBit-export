@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"time"
 
 	"fitbit-export/internal/fatsecret"
+	"fitbit-export/internal/hevy"
 )
 
 const (
@@ -41,8 +43,21 @@ type NutritionSource interface {
 	DailyTotals(ctx context.Context, start time.Time, end time.Time) ([]fatsecret.Day, error)
 }
 
-// BuildStrengthLog reads nutrition from Google Health when nutrition is nil.
-func BuildStrengthLog(ctx context.Context, source Source, nutrition NutritionSource, clock Clock, days int) (StrengthLog, error) {
+// WorkoutPages reads the sets of a workout from a Hevy workout link.
+type WorkoutPages interface {
+	Workout(ctx context.Context, link string) (string, error)
+}
+
+// BuildStrengthLog reads nutrition from Google Health when nutrition is nil,
+// and leaves Hevy links in notes as they are when pages is nil.
+func BuildStrengthLog(
+	ctx context.Context,
+	source Source,
+	nutrition NutritionSource,
+	pages WorkoutPages,
+	clock Clock,
+	days int,
+) (StrengthLog, error) {
 	day := startOfDay(clock.Now)
 	end := day.AddDate(0, 0, 1)
 
@@ -61,6 +76,7 @@ func BuildStrengthLog(ctx context.Context, source Source, nutrition NutritionSou
 		Unavailable: []string{},
 		Workouts:    recentStrengthWorkouts(workouts),
 	}
+	result.readHevyPages(ctx, pages)
 
 	body, err := loadBody(ctx, source, day, end)
 	if err != nil {
@@ -83,6 +99,34 @@ func BuildStrengthLog(ctx context.Context, source Source, nutrition NutritionSou
 func (s *StrengthLog) markUnavailable(key string, err error) {
 	log.Printf("%s: unavailable: %v", key, err)
 	s.Unavailable = append(s.Unavailable, key)
+}
+
+// readHevyPages puts the sets from the Hevy page in place of the link,
+// for workouts whose notes have a link and no sets of their own.
+func (s *StrengthLog) readHevyPages(ctx context.Context, pages WorkoutPages) {
+	if pages == nil {
+		return
+	}
+
+	var failed error
+	for i := range s.Workouts {
+		notes := s.Workouts[i].Notes
+		link := hevy.FindLink(notes)
+		if link == "" || hevy.HasSets(notes) {
+			continue
+		}
+
+		sets, err := pages.Workout(ctx, link)
+		if err != nil {
+			failed = err
+			log.Printf("hevy: %v", err)
+			continue
+		}
+		s.Workouts[i].Notes = strings.Replace(notes, link, sets, 1)
+	}
+	if failed != nil {
+		s.Unavailable = append(s.Unavailable, "hevy")
+	}
 }
 
 func recentStrengthWorkouts(workouts []Workout) []Workout {

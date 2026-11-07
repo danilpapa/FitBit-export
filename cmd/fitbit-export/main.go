@@ -15,6 +15,7 @@ import (
 	"fitbit-export/internal/config"
 	"fitbit-export/internal/fatsecret"
 	"fitbit-export/internal/googlehealth"
+	"fitbit-export/internal/hevy"
 	"fitbit-export/internal/httpclient"
 	"fitbit-export/internal/report"
 )
@@ -52,7 +53,10 @@ func run(ctx context.Context, args []string) error {
 		if cfg.FatSecret.Linked() {
 			nutrition = fatsecret.New(cfg.FatSecret)
 		}
-		log, err := report.BuildStrengthLog(ctx, client, nutrition, clock, report.StrengthHistoryDays)
+		pages := hevy.New(clock.Now.Location())
+		defer pages.Close()
+
+		log, err := report.BuildStrengthLog(ctx, client, nutrition, pages, clock, report.StrengthHistoryDays)
 		if err != nil {
 			return err
 		}

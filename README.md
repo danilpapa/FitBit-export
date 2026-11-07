@@ -6,7 +6,7 @@ You can also run it every day in a Claude Code scheduled task. Claude reads the 
 
 ## Requirements
 
-- Go 1.24 or later
+- Go 1.25 or later
 - A Fitbit device linked to your Google account
 - A Google Cloud project
 
@@ -86,6 +86,8 @@ Set 1: 80 kg x 12
 Set 2: 90 kg x 6
 ```
 
+If you log workouts in Hevy, you can paste only the share link instead, for example `https://hevy.com/workout/48nSfXwj9Tv`. The `strength` command opens the public page in headless Chrome and puts the sets in place of the link. This needs Google Chrome or Chromium on the machine. Notes that already contain sets are left as they are.
+
 The record must be one that returns `notes` from the API, and its date must match the workout. The command returns your last 6 strength workouts with notes from the past 90 days, your latest weight, and today's nutrition. The `strength-coach` skill reads the text and does the analysis.
 
 ## Read nutrition from FatSecret (optional)
@@ -137,6 +139,8 @@ When all four FatSecret values are set, `strength` reads nutrition from FatSecre
 
    If you use FatSecret, also allow `platform.fatsecret.com` and add the four `FATSECRET_*` values from `.env`.
 
+   If you paste Hevy links, also allow `hevy.com`, `api.hevyapp.com`, and `d2l9nsnmtah87f.cloudfront.net`. The cloud image already has Google Chrome.
+
 7. Create a private repository named `fitbit-memory`. Never make this repository public. The skills keep short summaries there, plus an archive of daily reports, sent advice, analyzed workouts, and daily nutrition.
 8. Add `profile.md` to the root of `fitbit-memory` with your goals, training cycle, preferences, and injuries, for example:
 
@@ -175,6 +179,7 @@ When all four FatSecret values are set, `strength` reads nutrition from FatSecre
 - **`OAuth refresh returned HTTP 400`:** the refresh token has expired, or the run cannot see your variables. Check that the task uses the right cloud environment, then run `auth` again if needed.
 - **Telegram returns `403` in a cloud run:** allow `api.telegram.org` in the environment used by the task.
 - **`nutrition` is in `unavailable`:** add the nutrition scope, run `auth` again, and update the refresh token in the cloud environment.
+- **`hevy` is in `unavailable`:** a Hevy page did not open. Check the Hevy domains in the cloud environment and look for `hevy:` lines in the log.
 - **FatSecret error in the log:** error `9` means the access token is no longer valid, so run `fatsecret-auth` again. Error `21` means FatSecret rejected the IP address of the run.
 
 ## Privacy

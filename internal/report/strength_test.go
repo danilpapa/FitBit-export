@@ -51,8 +51,13 @@ func buildStrength(t *testing.T, source fakeSource) StrengthLog {
 
 func buildStrengthWith(t *testing.T, source fakeSource, nutrition NutritionSource) StrengthLog {
 	t.Helper()
+	return buildStrengthFull(t, source, nutrition, nil)
+}
 
-	log, err := BuildStrengthLog(context.Background(), source, nutrition, Clock{Now: testNow}, StrengthHistoryDays)
+func buildStrengthFull(t *testing.T, source fakeSource, nutrition NutritionSource, pages WorkoutPages) StrengthLog {
+	t.Helper()
+
+	log, err := BuildStrengthLog(context.Background(), source, nutrition, pages, Clock{Now: testNow}, StrengthHistoryDays)
 	if err != nil {
 		t.Fatalf("BuildStrengthLog() error = %v", err)
 	}
@@ -212,6 +217,67 @@ func TestBuildStrengthLogMarksFatSecretFailure(t *testing.T) {
 	}
 }
 
+type fakePages struct {
+	sets   map[string]string
+	opened *[]string
+}
+
+func (f fakePages) Workout(_ context.Context, link string) (string, error) {
+	*f.opened = append(*f.opened, link)
+	if sets, ok := f.sets[link]; ok {
+		return sets, nil
+	}
+	return "", errors.New("chrome timed out")
+}
+
+func TestBuildStrengthLogReadsHevyPagesForLinksWithoutSets(t *testing.T) {
+	const (
+		bare   = "https://hevy.com/workout/bare"
+		filled = "https://hevy.com/workout/filled"
+	)
+	var opened []string
+	log := buildStrengthFull(t, fakeSource{
+		lists: map[string][]string{"exercise": {
+			strengthPoint("2026-10-30T15:00:00Z", "POWERLIFTING", "спина\n@hevyapp\n"+bare),
+			strengthPoint("2026-10-31T15:00:00Z", "POWERLIFTING", "Жим лежа\nСет 1: 80 kg x 12\n"+filled),
+		}},
+	}, nil, fakePages{
+		sets:   map[string]string{bare: "Подтягивания\nСет 1: 25 kg x 11"},
+		opened: &opened,
+	})
+
+	if !slices.Equal(opened, []string{bare}) {
+		t.Fatalf("opened %v, want only the link without sets", opened)
+	}
+	if got, want := log.Workouts[0].Notes, "спина\n@hevyapp\nПодтягивания\nСет 1: 25 kg x 11"; got != want {
+		t.Fatalf("notes = %q, want %q", got, want)
+	}
+	if got := log.Workouts[1].Notes; got != "Жим лежа\nСет 1: 80 kg x 12\n"+filled {
+		t.Fatalf("notes with sets changed: %q", got)
+	}
+	if len(log.Unavailable) != 0 {
+		t.Fatalf("Unavailable = %v", log.Unavailable)
+	}
+}
+
+func TestBuildStrengthLogKeepsLinkWhenHevyFails(t *testing.T) {
+	const link = "https://hevy.com/workout/broken"
+	var opened []string
+	log := buildStrengthFull(t, fakeSource{
+		lists: map[string][]string{"exercise": {
+			strengthPoint("2026-10-30T15:00:00Z", "POWERLIFTING", link),
+			strengthPoint("2026-10-31T15:00:00Z", "POWERLIFTING", "https://hevy.com/workout/broken2"),
+		}},
+	}, nil, fakePages{opened: &opened})
+
+	if want := []string{"hevy"}; !slices.Equal(log.Unavailable, want) {
+		t.Fatalf("Unavailable = %v, want %v once", log.Unavailable, want)
+	}
+	if log.Workouts[0].Notes != link {
+		t.Fatalf("notes = %q, want the link kept", log.Workouts[0].Notes)
+	}
+}
+
 func TestBuildStrengthLogKeepsWorkoutsWithoutBodyData(t *testing.T) {
 	log := buildStrength(t, fakeSource{
 		failing: map[string]bool{"weight": true, "nutrition-log": true},
@@ -232,7 +298,7 @@ func TestBuildStrengthLogKeepsWorkoutsWithoutBodyData(t *testing.T) {
 }
 
 func TestBuildStrengthLogReturnsWorkoutError(t *testing.T) {
-	_, err := BuildStrengthLog(context.Background(), fakeSource{failAll: true}, nil, Clock{Now: testNow}, StrengthHistoryDays)
+	_, err := BuildStrengthLog(context.Background(), fakeSource{failAll: true}, nil, nil, Clock{Now: testNow}, StrengthHistoryDays)
 	if err == nil {
 		t.Fatal("BuildStrengthLog() error = nil")
 	}
