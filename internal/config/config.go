@@ -22,6 +22,12 @@ type Config struct {
 	ClientSecret string
 	RefreshToken string
 	FatSecret    FatSecret
+	Telegram     Telegram
+}
+
+type Telegram struct {
+	BotToken string
+	ChatID   string
 }
 
 type FatSecret struct {
@@ -47,6 +53,10 @@ func Load() Config {
 			ConsumerSecret: os.Getenv("FATSECRET_CONSUMER_SECRET"),
 			AccessToken:    os.Getenv(fatSecretTokenKey),
 			AccessSecret:   os.Getenv(fatSecretSecretKey),
+		},
+		Telegram: Telegram{
+			BotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
+			ChatID:   os.Getenv("TELEGRAM_CHAT_ID"),
 		},
 	}
 }

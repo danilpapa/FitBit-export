@@ -164,6 +164,26 @@ When all four FatSecret values are set, `strength` reads nutrition from FatSecre
 
 12. Click **Run now** and check that the message arrives in Telegram. The `strength-coach` skill sends a message only on days with a logged strength workout. The `nutrition-coach` skill reviews your food every day and links it to your training.
 
+## Send quick commands to the bot
+
+During the day, send your bot a command with plain text. The next run applies it to that day only:
+
+| Command | Read by | Example |
+| --- | --- | --- |
+| `/note` | `fitbit-advice` | `/note headache since the morning` |
+| `/strength` | `strength-coach` | `/strength my shoulder hurt, keep the weights` |
+| `/nutrition` | `nutrition-coach` | `/nutrition dinner at a friend's, do not log today` |
+
+`make inbox` prints today's commands. The command reads only messages from `TELEGRAM_CHAT_ID`, so other people cannot steer the bot. Telegram keeps messages for about 24 hours, and a command sent after the daily run is lost.
+
+The skills mention each applied command in an `Учтено` line of the message and in the memory archive. To show the commands in the bot menu, send this to [@BotFather](https://t.me/BotFather) with `/setcommands`:
+
+```text
+note - Заметка о самочувствии на сегодня
+strength - Комментарий к сегодняшней тренировке
+nutrition - Комментарий к питанию за сегодня
+```
+
 ## Customize
 
 - **Goals and training cycle:** edit `profile.md` in `fitbit-memory`. Anything you add to the task prompt takes priority over it.

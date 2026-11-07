@@ -18,6 +18,7 @@ import (
 	"fitbit-export/internal/hevy"
 	"fitbit-export/internal/httpclient"
 	"fitbit-export/internal/report"
+	"fitbit-export/internal/telegram"
 )
 
 func main() {
@@ -47,6 +48,13 @@ func run(ctx context.Context, args []string) error {
 	clock := report.DeviceClock(ctx, client, time.Now())
 	if command == "note" {
 		return runNote(clock.Now, args[1:])
+	}
+	if command == "inbox" {
+		inbox, err := report.BuildInbox(ctx, telegram.New(cfg.Telegram), clock)
+		if err != nil {
+			return err
+		}
+		return printJSON(inbox)
 	}
 	if command == "strength" {
 		var nutrition report.NutritionSource

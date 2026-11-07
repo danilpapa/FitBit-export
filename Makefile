@@ -1,7 +1,7 @@
 RUN := go run ./cmd/fitbit-export
 
 .DEFAULT_GOAL := help
-.PHONY: help report strength auth fatsecret-auth note test vet fmt build
+.PHONY: help report strength auth fatsecret-auth note inbox test vet fmt build
 
 help: ## Show available commands
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-15s %s\n", $$1, $$2}'
@@ -21,6 +21,9 @@ fatsecret-auth: ## Link FatSecret and save the access token
 note: ## Add a note for today: make note TEXT="Slept badly"
 	@test -n "$(TEXT)" || { echo 'usage: make note TEXT="how you feel today"'; exit 1; }
 	@$(RUN) note "$(TEXT)"
+
+inbox: ## Print today's /note, /strength and /nutrition messages to the bot
+	@$(RUN) inbox
 
 test: ## Run tests
 	go test ./...
