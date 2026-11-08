@@ -39,8 +39,8 @@ How it works: [documentation/fatsecret.md](documentation/fatsecret.md). Without 
 
 **6. Cloud environment** at [claude.ai/code](https://claude.ai/code) ([docs](https://code.claude.com/docs/en/claude-code-on-the-web))
 
-1. Set **Network access** to **Custom**, keep the package manager list, and allow `health.googleapis.com`, `oauth2.googleapis.com`, and `api.telegram.org`. Add `platform.fatsecret.com` for FatSecret, and `hevy.com`, `api.hevyapp.com`, and `d2l9nsnmtah87f.cloudfront.net` for Hevy.
-2. Add the variables from `.env`: three `GOOGLE_HEALTH_*`, four `FATSECRET_*` if you use FatSecret, plus `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+1. Set **Network access** to **Custom**, keep the package manager list, and allow `health.googleapis.com`, `oauth2.googleapis.com`, and `api.telegram.org`. Add `platform.fatsecret.com` for FatSecret, `hevy.com`, `api.hevyapp.com`, and `d2l9nsnmtah87f.cloudfront.net` for Hevy, and `github.com`, `api.github.com`, and `release-assets.githubusercontent.com` for the smart scale.
+2. Add the variables from `.env`: three `GOOGLE_HEALTH_*`, four `FATSECRET_*` if you use FatSecret, plus `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. For the smart scale ([ScalePipeline](https://github.com/danilpapa/ScalePipeline)), add `SCALE_TOKEN` (read-only access to `ScaleData` and `ScalePipeline`), `PROFILE_SEX`, `PROFILE_BIRTH_DATE`, `PROFILE_HEIGHT_CM`, and `PROFILE_GOAL`. Check it with `bash scripts/fetch_scale_report.sh`.
 
 **7. Scheduled task** at [claude.ai/code/routines](https://claude.ai/code/routines) ([docs](https://code.claude.com/docs/en/routines))
 
