@@ -7,7 +7,8 @@ import (
 )
 
 var (
-	linkPattern  = regexp.MustCompile(`https?://(?:www\.)?hevy\.com/workout/[A-Za-z0-9]+`)
+	// Share links have short ids like 48nSfXwj9Tv, links copied in the app have UUIDs.
+	linkPattern  = regexp.MustCompile(`https?://(?:www\.)?hevy\.com/workout/[A-Za-z0-9-]+`)
 	setsPattern  = regexp.MustCompile(`(?i)(сет|set) \d+:|\d\s*(kg|кг)\s*[xх×]\s*\d`)
 	tokenPattern = regexp.MustCompile(`^(\d+|[A-ZА-Я])$`)
 	repsPattern  = regexp.MustCompile(`[xх×] (\d+) повтор\S*`)

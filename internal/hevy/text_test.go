@@ -112,10 +112,11 @@ func TestCleanMatchesNotesFormat(t *testing.T) {
 
 func TestFindLink(t *testing.T) {
 	tests := map[string]string{
-		"грудь\n@hevyapp\nhttps://hevy.com/workout/48nSfXwj9Tv": "https://hevy.com/workout/48nSfXwj9Tv",
-		"https://www.hevy.com/workout/abc123 потом":             "https://www.hevy.com/workout/abc123",
-		"https://evil.example/hevy.com/workout/abc":             "",
-		"https://hevy.com/user/danilpapa":                       "",
+		"грудь\n@hevyapp\nhttps://hevy.com/workout/48nSfXwj9Tv":         "https://hevy.com/workout/48nSfXwj9Tv",
+		"https://www.hevy.com/workout/abc123 потом":                     "https://www.hevy.com/workout/abc123",
+		"https://hevy.com/workout/d657850b-45c1-4ea8-8b89-03339df7dd38": "https://hevy.com/workout/d657850b-45c1-4ea8-8b89-03339df7dd38",
+		"https://evil.example/hevy.com/workout/abc":                     "",
+		"https://hevy.com/user/danilpapa":                               "",
 	}
 	for notes, want := range tests {
 		if got := FindLink(notes); got != want {

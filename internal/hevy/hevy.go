@@ -197,6 +197,9 @@ func waitForSets(tab context.Context) (string, error) {
 			}
 			return text, nil
 		}
+		if strings.Contains(text, "Тренировка не найдена") {
+			return text, errors.New("Hevy says the workout is not found: the link is wrong or the workout is private")
+		}
 
 		select {
 		case <-tab.Done():
