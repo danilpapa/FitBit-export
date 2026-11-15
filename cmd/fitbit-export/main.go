@@ -64,11 +64,14 @@ func run(ctx context.Context, args []string) error {
 		pages := hevy.New(clock.Now.Location())
 		defer pages.Close()
 
-		log, err := report.BuildStrengthLog(ctx, client, nutrition, pages, clock, report.StrengthHistoryDays)
-		if err != nil {
-			return err
+		workouts := report.Hevy{Pages: pages, User: cfg.HevyUser}
+		if cfg.HevyUser == "" {
+			log.Print("hevy: HEVY_USER is not set, only /additionalTraining links are read")
 		}
-		return printJSON(log)
+		if cfg.Telegram.BotToken != "" {
+			workouts.Inbox = telegram.New(cfg.Telegram)
+		}
+		return printJSON(report.BuildStrengthLog(ctx, client, nutrition, workouts, clock))
 	}
 
 	daily, err := report.Build(ctx, client, clock)

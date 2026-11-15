@@ -5,32 +5,34 @@ import (
 	"fmt"
 	"log"
 	"slices"
-	"strings"
 	"time"
 
 	"fitbit-export/internal/fatsecret"
 	"fitbit-export/internal/hevy"
 )
 
-const (
-	StrengthHistoryDays = 90
+const weightLookbackDays = 30
 
-	maxStrengthWorkouts = 6
-	weightLookbackDays  = 30
-)
+var nutritionKeys = []string{caloriesKey, proteinKey, carbsKey, fatKey}
 
-var (
-	strengthTypes = []string{"POWERLIFTING", "STRENGTH_TRAINING", "WEIGHTLIFTING"}
-	nutritionKeys = []string{caloriesKey, proteinKey, carbsKey, fatKey}
-)
-
+// StrengthLog has today's workouts from Hevy, body weight and today's nutrition.
+// History of older workouts lives in the memory of the strength-coach skill.
 type StrengthLog struct {
 	GeneratedAt time.Time         `json:"generated_at"`
-	Days        int               `json:"days"`
 	Unavailable []string          `json:"unavailable"`
-	Workouts    []Workout         `json:"workouts"`
+	Workouts    []HevyWorkout     `json:"workouts"`
 	Body        Body              `json:"body"`
 	Nutrition   map[string]Metric `json:"nutrition_today"`
+}
+
+// HevyWorkout is one workout of today in the format of workout notes.
+type HevyWorkout struct {
+	// Source is "profile" for the newest workout on the profile page and
+	// "additional" for a link from the /additionalTraining command.
+	Source    string     `json:"source"`
+	Link      string     `json:"link"`
+	StartedAt *time.Time `json:"started_at"`
+	Notes     string     `json:"notes"`
 }
 
 type Body struct {
@@ -43,40 +45,38 @@ type NutritionSource interface {
 	DailyTotals(ctx context.Context, start time.Time, end time.Time) ([]fatsecret.Day, error)
 }
 
-// WorkoutPages reads the sets of a workout from a Hevy workout link.
+// WorkoutPages reads public Hevy pages.
 type WorkoutPages interface {
+	Latest(ctx context.Context, username string) (hevy.Card, error)
 	Workout(ctx context.Context, link string) (string, error)
 }
 
-// BuildStrengthLog reads nutrition from Google Health when nutrition is nil,
-// and leaves Hevy links in notes as they are when pages is nil.
+// Hevy says where today's workouts come from. Without Pages there are none.
+type Hevy struct {
+	Pages WorkoutPages
+	// User is the Hevy username. The newest workout on the profile counts when it started today.
+	User string
+	// Inbox has the /additionalTraining commands with links to more workouts of today.
+	Inbox MessageSource
+}
+
+// BuildStrengthLog reads nutrition from Google Health when nutrition is nil.
 func BuildStrengthLog(
 	ctx context.Context,
 	source Source,
 	nutrition NutritionSource,
-	pages WorkoutPages,
+	workouts Hevy,
 	clock Clock,
-	days int,
-) (StrengthLog, error) {
+) StrengthLog {
 	day := startOfDay(clock.Now)
 	end := day.AddDate(0, 0, 1)
 
-	points, err := source.List(ctx, "exercise", workoutFilter(end.AddDate(0, 0, -days), end))
-	if err != nil {
-		return StrengthLog{}, err
-	}
-	workouts, err := decodeWorkouts(points)
-	if err != nil {
-		return StrengthLog{}, err
-	}
-
 	result := StrengthLog{
 		GeneratedAt: clock.Now.Truncate(time.Second),
-		Days:        days,
 		Unavailable: []string{},
-		Workouts:    recentStrengthWorkouts(workouts),
+		Workouts:    []HevyWorkout{},
 	}
-	result.readHevyPages(ctx, pages)
+	result.readHevy(ctx, workouts, clock)
 
 	body, err := loadBody(ctx, source, day, end)
 	if err != nil {
@@ -93,7 +93,7 @@ func BuildStrengthLog(
 		result.Nutrition[key] = newMetric(series[key], day, 0)
 	}
 
-	return result, nil
+	return result
 }
 
 func (s *StrengthLog) markUnavailable(key string, err error) {
@@ -101,42 +101,110 @@ func (s *StrengthLog) markUnavailable(key string, err error) {
 	s.Unavailable = append(s.Unavailable, key)
 }
 
-// readHevyPages puts the sets from the Hevy page in place of the link,
-// for workouts whose notes have a link and no sets of their own.
-func (s *StrengthLog) readHevyPages(ctx context.Context, pages WorkoutPages) {
-	if pages == nil {
+// readHevy collects today's workouts: the newest one on the profile when it
+// started today, and the ones linked with /additionalTraining. One failed page
+// marks hevy unavailable and keeps the rest.
+func (s *StrengthLog) readHevy(ctx context.Context, source Hevy, clock Clock) {
+	if source.Pages == nil {
 		return
 	}
-
 	var failed error
-	for i := range s.Workouts {
-		notes := s.Workouts[i].Notes
-		link := hevy.FindLink(notes)
-		if link == "" || hevy.HasSets(notes) {
+
+	if source.User != "" {
+		if err := s.readProfile(ctx, source, clock); err != nil {
+			failed = err
+		}
+	}
+
+	for _, link := range s.additionalLinks(ctx, source.Inbox, clock) {
+		if slices.ContainsFunc(s.Workouts, func(known HevyWorkout) bool { return known.Link == link }) {
 			continue
 		}
-
-		sets, err := pages.Workout(ctx, link)
+		notes, err := source.Pages.Workout(ctx, link)
 		if err != nil {
 			failed = err
 			log.Printf("hevy: %v", err)
 			continue
 		}
-		s.Workouts[i].Notes = strings.Replace(notes, link, sets, 1)
+		workout := HevyWorkout{Source: "additional", Link: link, Notes: notes}
+		if started, err := hevy.ParseDate(notes, clock.Now.Location()); err == nil {
+			workout.StartedAt = &started
+		}
+		s.addWorkout(workout)
 	}
+
+	slices.SortStableFunc(s.Workouts, func(a, b HevyWorkout) int {
+		switch {
+		case a.StartedAt == nil && b.StartedAt == nil:
+			return 0
+		case a.StartedAt == nil:
+			return 1
+		case b.StartedAt == nil:
+			return -1
+		}
+		return a.StartedAt.Compare(*b.StartedAt)
+	})
 	if failed != nil {
 		s.Unavailable = append(s.Unavailable, "hevy")
 	}
 }
 
-func recentStrengthWorkouts(workouts []Workout) []Workout {
-	logged := slices.DeleteFunc(slices.Clone(workouts), func(workout Workout) bool {
-		return workout.Notes == "" || !slices.Contains(strengthTypes, workout.Type)
-	})
-	slices.SortFunc(logged, func(a, b Workout) int {
-		return a.StartedAt.Compare(b.StartedAt)
-	})
-	return logged[max(0, len(logged)-maxStrengthWorkouts):]
+func (s *StrengthLog) readProfile(ctx context.Context, source Hevy, clock Clock) error {
+	card, err := source.Pages.Latest(ctx, source.User)
+	if err != nil {
+		log.Printf("hevy: %v", err)
+		return err
+	}
+	if !startOfDay(card.StartedAt.In(clock.Now.Location())).Equal(startOfDay(clock.Now)) {
+		log.Printf("hevy: no workout today, the newest started %s", card.StartedAt.Format("2006-01-02 15:04"))
+		return nil
+	}
+
+	notes, err := source.Pages.Workout(ctx, card.Link)
+	if err != nil {
+		log.Printf("hevy: %v", err)
+		return err
+	}
+	started := card.StartedAt
+	s.addWorkout(HevyWorkout{Source: "profile", Link: card.Link, StartedAt: &started, Notes: hevy.WithDescription(notes, card)})
+	return nil
+}
+
+// addWorkout skips a workout that is already there: the app and the share
+// sheet give the same workout different links, so the start time decides too.
+func (s *StrengthLog) addWorkout(workout HevyWorkout) {
+	for _, known := range s.Workouts {
+		sameStart := known.StartedAt != nil && workout.StartedAt != nil && known.StartedAt.Equal(*workout.StartedAt)
+		if known.Link == workout.Link || sameStart {
+			return
+		}
+	}
+	s.Workouts = append(s.Workouts, workout)
+}
+
+// additionalLinks returns the Hevy links from today's /additionalTraining commands.
+func (s *StrengthLog) additionalLinks(ctx context.Context, source MessageSource, clock Clock) []string {
+	if source == nil {
+		return nil
+	}
+	inbox, err := BuildInbox(ctx, source, clock)
+	if err != nil {
+		s.markUnavailable("inbox", err)
+		return nil
+	}
+
+	var links []string
+	for _, message := range inbox.AdditionalTraining {
+		link := hevy.FindLink(message.Text)
+		if link == "" {
+			log.Printf("hevy: /additionalTraining sent at %s has no workout link", message.SentAt.Format("15:04"))
+			continue
+		}
+		if !slices.Contains(links, link) {
+			links = append(links, link)
+		}
+	}
+	return links
 }
 
 func loadBody(ctx context.Context, source Source, day time.Time, end time.Time) (Body, error) {

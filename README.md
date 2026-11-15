@@ -30,7 +30,7 @@ How it works: [documentation/fatsecret.md](documentation/fatsecret.md). Without 
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and send it any message.
 2. Open `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy `chat.id`.
-3. Optional: in @BotFather, send `/setcommands` and add `note`, `strength`, and `nutrition`.
+3. Optional: in @BotFather, send `/setcommands` and add `note`, `strength`, `nutrition`, and `additionaltraining`.
 
 **5. Private memory**
 
@@ -40,7 +40,7 @@ How it works: [documentation/fatsecret.md](documentation/fatsecret.md). Without 
 **6. Cloud environment** at [claude.ai/code](https://claude.ai/code) ([docs](https://code.claude.com/docs/en/claude-code-on-the-web))
 
 1. Set **Network access** to **Custom**, keep the package manager list, and allow `health.googleapis.com`, `oauth2.googleapis.com`, and `api.telegram.org`. Add `platform.fatsecret.com` for FatSecret, `hevy.com`, `api.hevyapp.com`, and `d2l9nsnmtah87f.cloudfront.net` for Hevy, and `github.com`, `api.github.com`, and `release-assets.githubusercontent.com` for the smart scale.
-2. Add the variables from `.env`: three `GOOGLE_HEALTH_*`, four `FATSECRET_*` if you use FatSecret, plus `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. For the smart scale ([ScalePipeline](https://github.com/danilpapa/ScalePipeline)), add `SCALE_TOKEN` (read-only access to `ScaleData` and `ScalePipeline`), `PROFILE_SEX`, `PROFILE_BIRTH_DATE`, `PROFILE_HEIGHT_CM`, and `PROFILE_GOAL`. Check it with `bash scripts/fetch_scale_report.sh`.
+2. Add the variables from `.env`: three `GOOGLE_HEALTH_*`, four `FATSECRET_*` if you use FatSecret, plus `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, and `HEVY_USER` with your Hevy username. For the smart scale ([ScalePipeline](https://github.com/danilpapa/ScalePipeline)), add `SCALE_TOKEN` (read-only access to `ScaleData` and `ScalePipeline`), `PROFILE_SEX`, `PROFILE_BIRTH_DATE`, `PROFILE_HEIGHT_CM`, and `PROFILE_GOAL`. Check it with `bash scripts/fetch_scale_report.sh`.
 
 **7. Scheduled task** at [claude.ai/code/routines](https://claude.ai/code/routines) ([docs](https://code.claude.com/docs/en/routines))
 
@@ -56,7 +56,7 @@ How it works: [documentation/fatsecret.md](documentation/fatsecret.md). Without 
 
 ## Every day
 
-- **Workout:** Paste a Hevy share link. The CLI opens the link in headless Chrome ([documentation/hevy.md](documentation/hevy.md)). The record date must match the workout, and not every record type returns notes through the API: check with `make strength`.
+- **Workout:** log it in Hevy and keep your profile public. The CLI opens `hevy.com/user/<HEVY_USER>` in headless Chrome and reads the newest workout if it started today ([documentation/hevy.md](documentation/hevy.md)). The profile shows only the newest workout, so for a second workout on the same day send the bot `/additionalTraining <link>` with the link to the other one. Check with `make strength`.
 - **Food and weight:** log food in FatSecret or Google Health, and weigh yourself in Google Health.
 - **Commands:** send the bot `/note`, `/strength`, or `/nutrition` with text, for example `/nutrition dinner out, do not log today`. They apply to that day only. Check them with `make inbox`.
 - **Goals:** edit `profile.md` in `fitbit-memory`. To change how the advice works, edit the skills in `.claude/skills/`.

@@ -1,4 +1,4 @@
-// Package hevy reads public Hevy workout pages with headless Chrome.
+// Package hevy reads public Hevy profile and workout pages with headless Chrome.
 package hevy
 
 import (
@@ -66,6 +66,7 @@ var trackerHosts = []string{
 
 // Pages opens one Chrome on first use and renders each page in its own tab.
 type Pages struct {
+	location *time.Location
 	timezone string
 
 	once    sync.Once
@@ -76,7 +77,7 @@ type Pages struct {
 
 // New renders pages in the time zone of location, so dates match the device clock.
 func New(location *time.Location) *Pages {
-	return &Pages{timezone: timezoneID(time.Now().In(location))}
+	return &Pages{location: location, timezone: timezoneID(time.Now().In(location))}
 }
 
 // Workout returns the sets of a public workout page in the format of workout notes.
@@ -220,8 +221,6 @@ func timezoneID(moment time.Time) string {
 	return fmt.Sprintf("Etc/GMT%+d", -offset/3600)
 }
 
-// proxyOptions sends Chrome through the egress proxy of a cloud run. Chrome
-// ignores HTTPS_PROXY, and it does not use the system certificates on Linux.
 func proxyOptions() []chromedp.ExecAllocatorOption {
 	raw := firstEnv("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
 	if raw == "" {
@@ -247,9 +246,6 @@ func proxyOptions() []chromedp.ExecAllocatorOption {
 	return append(options, chromedp.Flag("ignore-certificate-errors-spki-list", keys))
 }
 
-// trustedKeys opens hevy.com through the proxy with the system certificates and
-// returns the keys of the chain that the system verified. Chrome then trusts that
-// chain and nothing else, instead of ignoring every certificate error.
 func trustedKeys() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), trustTimeout)
 	defer cancel()

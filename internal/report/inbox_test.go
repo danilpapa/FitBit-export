@@ -35,6 +35,8 @@ func TestBuildInboxKeepsTodaysCommands(t *testing.T) {
 		{SentAt: at(7, 19, 0), Text: "просто текст"},
 		{SentAt: at(7, 20, 0), Text: "/note"},
 		{SentAt: at(7, 21, 0), Text: "/start"},
+		{SentAt: at(7, 21, 30), Text: "/additionalTraining https://hevy.com/workout/abc123"},
+		{SentAt: at(7, 22, 0), Text: "/additional_training@FitBitExporterBot вечером ещё руки https://hevy.com/workout/def456"},
 	}}, Clock{Now: now})
 	if err != nil {
 		t.Fatalf("BuildInbox() error = %v", err)
@@ -55,6 +57,9 @@ func TestBuildInboxKeepsTodaysCommands(t *testing.T) {
 	if len(inbox.Strength) != 1 || inbox.Strength[0].Text != "болело плечо" {
 		t.Fatalf("Strength = %+v", inbox.Strength)
 	}
+	if len(inbox.AdditionalTraining) != 2 || inbox.AdditionalTraining[0].Text != "https://hevy.com/workout/abc123" {
+		t.Fatalf("AdditionalTraining = %+v", inbox.AdditionalTraining)
+	}
 }
 
 func TestBuildInboxJSONHasEmptyLists(t *testing.T) {
@@ -63,7 +68,7 @@ func TestBuildInboxJSONHasEmptyLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded, _ := json.Marshal(inbox)
-	for _, want := range []string{`"note":[]`, `"strength":[]`, `"nutrition":[]`} {
+	for _, want := range []string{`"note":[]`, `"strength":[]`, `"nutrition":[]`, `"additional_training":[]`} {
 		if !strings.Contains(string(encoded), want) {
 			t.Fatalf("JSON has no %s: %s", want, encoded)
 		}

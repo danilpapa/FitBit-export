@@ -50,8 +50,13 @@ func HasSets(notes string) bool {
 // Clean turns the text of a Russian Hevy workout page into the format of workout notes:
 //
 //	Жим лежа (Штанга)
+//	Заметка: узкий хват
 //	Сет 1: 80 kg x 12
 //	Сет 2: 55 kg x 6 [В отказ]
+//
+// An exercise on the page is its name, then its notes, then the sets. Hevy shows
+// the note of this workout and the pinned note of the exercise the same way, so
+// both become a «Заметка» line.
 func Clean(page string) string {
 	var lines []string
 	for line := range strings.Lines(page) {
@@ -60,7 +65,13 @@ func Clean(page string) string {
 		}
 	}
 
-	var out []string
+	// pending holds the lines since the last set or header label: the name and
+	// notes of the next exercise, or plain text when no sets follow.
+	var out, pending []string
+	flush := func() {
+		out = append(out, pending...)
+		pending = nil
+	}
 	set := 0
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
@@ -70,14 +81,22 @@ func Clean(page string) string {
 		}
 
 		switch {
-		case noiseLines[line] || strings.HasPrefix(line, "Лучший") || strings.HasPrefix(line, "Чтобы подписаться"):
-		case next == "ПОДХОДЫ":
-			out = append(out, "", line)
+		case line == "ПОДХОДЫ":
+			if len(pending) > 0 {
+				out = append(out, "", pending[0])
+				for _, note := range pending[1:] {
+					out = append(out, "Заметка: "+note)
+				}
+				pending = nil
+			}
 			set = 0
+		case noiseLines[line] || strings.HasPrefix(line, "Лучший") || strings.HasPrefix(line, "Чтобы подписаться"):
 		case headerLabels[line] && next != "":
+			flush()
 			out = append(out, line+": "+next)
 			i++
 		case tokenPattern.MatchString(line) && next != "":
+			flush()
 			set++
 			entry := "Сет " + strconv.Itoa(set) + ": " + setValue(next)
 			if tag, ok := setTags[line]; ok {
@@ -86,9 +105,10 @@ func Clean(page string) string {
 			out = append(out, entry)
 			i++
 		default:
-			out = append(out, line)
+			pending = append(pending, line)
 		}
 	}
+	flush()
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 

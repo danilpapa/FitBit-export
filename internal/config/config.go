@@ -23,6 +23,8 @@ type Config struct {
 	RefreshToken string
 	FatSecret    FatSecret
 	Telegram     Telegram
+	// HevyUser is the Hevy username whose public profile has today's workout.
+	HevyUser string
 }
 
 type Telegram struct {
@@ -58,6 +60,7 @@ func Load() Config {
 			BotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
 			ChatID:   os.Getenv("TELEGRAM_CHAT_ID"),
 		},
+		HevyUser: os.Getenv("HEVY_USER"),
 	}
 }
 

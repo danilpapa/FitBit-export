@@ -16,13 +16,15 @@ type MessageSource interface {
 	Messages(ctx context.Context) ([]telegram.Message, error)
 }
 
-// Inbox holds today's bot commands, one list per skill.
+// Inbox holds today's bot commands, one list per skill. AdditionalTraining has
+// links to more Hevy workouts of today: the strength command reads them itself.
 type Inbox struct {
-	Date        string         `json:"date"`
-	GeneratedAt time.Time      `json:"generated_at"`
-	Note        []InboxMessage `json:"note"`
-	Strength    []InboxMessage `json:"strength"`
-	Nutrition   []InboxMessage `json:"nutrition"`
+	Date               string         `json:"date"`
+	GeneratedAt        time.Time      `json:"generated_at"`
+	Note               []InboxMessage `json:"note"`
+	Strength           []InboxMessage `json:"strength"`
+	Nutrition          []InboxMessage `json:"nutrition"`
+	AdditionalTraining []InboxMessage `json:"additional_training"`
 }
 
 type InboxMessage struct {
@@ -37,11 +39,12 @@ func BuildInbox(ctx context.Context, source MessageSource, clock Clock) (Inbox, 
 	end := day.AddDate(0, 0, 1)
 
 	inbox := Inbox{
-		Date:        dateKey(day),
-		GeneratedAt: clock.Now.Truncate(time.Second),
-		Note:        []InboxMessage{},
-		Strength:    []InboxMessage{},
-		Nutrition:   []InboxMessage{},
+		Date:               dateKey(day),
+		GeneratedAt:        clock.Now.Truncate(time.Second),
+		Note:               []InboxMessage{},
+		Strength:           []InboxMessage{},
+		Nutrition:          []InboxMessage{},
+		AdditionalTraining: []InboxMessage{},
 	}
 
 	messages, err := source.Messages(ctx)
@@ -66,12 +69,15 @@ func BuildInbox(ctx context.Context, source MessageSource, clock Clock) (Inbox, 
 			inbox.Strength = append(inbox.Strength, entry)
 		case "nutrition":
 			inbox.Nutrition = append(inbox.Nutrition, entry)
+		case "additionaltraining", "additional_training":
+			inbox.AdditionalTraining = append(inbox.AdditionalTraining, entry)
 		}
 	}
 	return inbox, nil
 }
 
-// parseCommand splits "/note@MyBot text" into "note" and "text".
+// parseCommand splits "/note@MyBot text" into "note" and "text". Commands are case
+// insensitive, so /additionalTraining works although BotFather only takes lowercase.
 func parseCommand(message string) (string, string) {
 	message = strings.TrimSpace(message)
 	if !strings.HasPrefix(message, "/") {

@@ -11,13 +11,9 @@ import (
 	"time"
 
 	"fitbit-export/internal/fatsecret"
+	"fitbit-export/internal/hevy"
+	"fitbit-export/internal/telegram"
 )
-
-func strengthPoint(start string, exerciseType string, notes string) string {
-	return fmt.Sprintf(`{"exercise":{"interval":{"startTime":"%s","startUtcOffset":"10800s","endTime":"%s","endUtcOffset":"10800s"},
-		"exerciseType":"%s","displayName":"Силовая","notes":%q,"activeDuration":"3600s","metricsSummary":{}}}`,
-		start, start, exerciseType, notes)
-}
 
 func weightPoint(physicalTime string, grams int) string {
 	return fmt.Sprintf(`{"weight":{"sampleTime":{"physicalTime":"%s","utcOffset":"10800s"},"weightGrams":%d}}`, physicalTime, grams)
@@ -51,60 +47,12 @@ func buildStrength(t *testing.T, source fakeSource) StrengthLog {
 
 func buildStrengthWith(t *testing.T, source fakeSource, nutrition NutritionSource) StrengthLog {
 	t.Helper()
-	return buildStrengthFull(t, source, nutrition, nil)
+	return buildStrengthFull(t, source, nutrition, Hevy{})
 }
 
-func buildStrengthFull(t *testing.T, source fakeSource, nutrition NutritionSource, pages WorkoutPages) StrengthLog {
+func buildStrengthFull(t *testing.T, source fakeSource, nutrition NutritionSource, workouts Hevy) StrengthLog {
 	t.Helper()
-
-	log, err := BuildStrengthLog(context.Background(), source, nutrition, pages, Clock{Now: testNow}, StrengthHistoryDays)
-	if err != nil {
-		t.Fatalf("BuildStrengthLog() error = %v", err)
-	}
-	return log
-}
-
-func TestBuildStrengthLogKeepsLoggedStrengthWorkouts(t *testing.T) {
-	filters := map[string]string{}
-	log := buildStrength(t, fakeSource{
-		lists: map[string][]string{"exercise": {
-			strengthPoint("2026-10-30T15:00:00Z", "POWERLIFTING", "Присед\nСет 1: 100 kg x 5"),
-			strengthPoint("2026-10-20T15:00:00Z", "STRENGTH_TRAINING", "жим 80 на 8"),
-			strengthPoint("2026-10-25T15:00:00Z", "POWERLIFTING", ""),
-			strengthPoint("2026-10-26T15:00:00Z", "WALKING", "тест"),
-		}},
-		filters: filters,
-	})
-
-	if len(log.Workouts) != 2 {
-		t.Fatalf("Workouts = %+v, want only strength workouts with text", log.Workouts)
-	}
-	if log.Workouts[0].Notes != "жим 80 на 8" || log.Workouts[1].Notes != "Присед\nСет 1: 100 kg x 5" {
-		t.Fatalf("Workouts = %+v, want the oldest first", log.Workouts)
-	}
-
-	want := `exercise.interval.civil_start_time >= "2026-08-03T00:00:00" AND ` +
-		`exercise.interval.civil_start_time < "2026-11-01T00:00:00"`
-	if filters["exercise"] != want {
-		t.Fatalf("filter = %s, want %s", filters["exercise"], want)
-	}
-}
-
-func TestBuildStrengthLogKeepsRecentWorkouts(t *testing.T) {
-	var points []string
-	for day := 1; day <= maxStrengthWorkouts+3; day++ {
-		start := fmt.Sprintf("2026-10-%02dT15:00:00Z", day)
-		points = append(points, strengthPoint(start, "POWERLIFTING", fmt.Sprintf("день %d", day)))
-	}
-
-	log := buildStrength(t, fakeSource{lists: map[string][]string{"exercise": points}})
-
-	if len(log.Workouts) != maxStrengthWorkouts {
-		t.Fatalf("Workouts = %d, want %d", len(log.Workouts), maxStrengthWorkouts)
-	}
-	if got := log.Workouts[0].Notes; got != "день 4" {
-		t.Fatalf("first workout = %s, want the oldest kept one", got)
-	}
+	return BuildStrengthLog(context.Background(), source, nutrition, workouts, Clock{Now: testNow})
 }
 
 func TestBuildStrengthLogUsesLatestWeighIn(t *testing.T) {
@@ -218,72 +166,165 @@ func TestBuildStrengthLogMarksFatSecretFailure(t *testing.T) {
 }
 
 type fakePages struct {
-	sets   map[string]string
-	opened *[]string
+	card    hevy.Card
+	cardErr error
+	pages   map[string]string
+	opened  *[]string
+}
+
+func (f fakePages) Latest(context.Context, string) (hevy.Card, error) {
+	return f.card, f.cardErr
 }
 
 func (f fakePages) Workout(_ context.Context, link string) (string, error) {
 	*f.opened = append(*f.opened, link)
-	if sets, ok := f.sets[link]; ok {
-		return sets, nil
+	if notes, ok := f.pages[link]; ok {
+		return notes, nil
 	}
 	return "", errors.New("chrome timed out")
 }
 
-func TestBuildStrengthLogReadsHevyPagesForLinksWithoutSets(t *testing.T) {
-	const (
-		bare   = "https://hevy.com/workout/bare"
-		filled = "https://hevy.com/workout/filled"
-	)
+func hevyPage(started string, exercise string) string {
+	return "danilpapa\n" + started + "\nтренировка\nПродолжительность: 1 ч\n\n" + exercise + "\nСет 1: 80 kg x 8"
+}
+
+func command(hour int, text string) telegram.Message {
+	return telegram.Message{SentAt: time.Date(2026, time.October, 31, hour, 0, 0, 0, time.UTC), Text: text}
+}
+
+func TestBuildStrengthLogReadsTodaysWorkoutFromProfile(t *testing.T) {
+	const link = "https://hevy.com/workout/today"
 	var opened []string
-	log := buildStrengthFull(t, fakeSource{
-		lists: map[string][]string{"exercise": {
-			strengthPoint("2026-10-30T15:00:00Z", "POWERLIFTING", "спина\n@hevyapp\n"+bare),
-			strengthPoint("2026-10-31T15:00:00Z", "POWERLIFTING", "Жим лежа\nСет 1: 80 kg x 12\n"+filled),
-		}},
-	}, nil, fakePages{
-		sets:   map[string]string{bare: "Подтягивания\nСет 1: 25 kg x 11"},
-		opened: &opened,
+	log := buildStrengthFull(t, fakeSource{}, nil, Hevy{
+		User: "danilpapa",
+		Pages: fakePages{
+			card:   hevy.Card{Link: link, Title: "тренировка", Description: "болело плечо", StartedAt: time.Date(2026, time.October, 31, 18, 0, 0, 0, time.UTC)},
+			pages:  map[string]string{link: hevyPage("31 окт. 2026 г., 18:00", "Жим лежа (Штанга)")},
+			opened: &opened,
+		},
 	})
 
-	if !slices.Equal(opened, []string{bare}) {
-		t.Fatalf("opened %v, want only the link without sets", opened)
+	if len(log.Workouts) != 1 {
+		t.Fatalf("Workouts = %+v", log.Workouts)
 	}
-	if got, want := log.Workouts[0].Notes, "спина\n@hevyapp\nПодтягивания\nСет 1: 25 kg x 11"; got != want {
-		t.Fatalf("notes = %q, want %q", got, want)
+	workout := log.Workouts[0]
+	if workout.Source != "profile" || workout.Link != link || workout.StartedAt.Hour() != 18 {
+		t.Fatalf("workout = %+v", workout)
 	}
-	if got := log.Workouts[1].Notes; got != "Жим лежа\nСет 1: 80 kg x 12\n"+filled {
-		t.Fatalf("notes with sets changed: %q", got)
+	if !strings.Contains(workout.Notes, "тренировка\nОписание: болело плечо\n") || !strings.Contains(workout.Notes, "Сет 1: 80 kg x 8") {
+		t.Fatalf("notes = %q, want the sets and the description", workout.Notes)
 	}
 	if len(log.Unavailable) != 0 {
 		t.Fatalf("Unavailable = %v", log.Unavailable)
 	}
 }
 
-func TestBuildStrengthLogKeepsLinkWhenHevyFails(t *testing.T) {
-	const link = "https://hevy.com/workout/broken"
+func TestBuildStrengthLogSkipsOlderProfileWorkout(t *testing.T) {
 	var opened []string
-	log := buildStrengthFull(t, fakeSource{
-		lists: map[string][]string{"exercise": {
-			strengthPoint("2026-10-30T15:00:00Z", "POWERLIFTING", link),
-			strengthPoint("2026-10-31T15:00:00Z", "POWERLIFTING", "https://hevy.com/workout/broken2"),
-		}},
-	}, nil, fakePages{opened: &opened})
+	log := buildStrengthFull(t, fakeSource{}, nil, Hevy{
+		User: "danilpapa",
+		Pages: fakePages{
+			card:   hevy.Card{Link: "https://hevy.com/workout/old", StartedAt: time.Date(2026, time.October, 30, 23, 0, 0, 0, time.UTC)},
+			opened: &opened,
+		},
+	})
 
-	if want := []string{"hevy"}; !slices.Equal(log.Unavailable, want) {
-		t.Fatalf("Unavailable = %v, want %v once", log.Unavailable, want)
+	if len(log.Workouts) != 0 || len(opened) != 0 || len(log.Unavailable) != 0 {
+		t.Fatalf("Workouts = %+v, opened %v, Unavailable = %v, want no workout today and no error", log.Workouts, opened, log.Unavailable)
 	}
-	if log.Workouts[0].Notes != link {
-		t.Fatalf("notes = %q, want the link kept", log.Workouts[0].Notes)
+}
+
+func TestBuildStrengthLogAddsAdditionalTraining(t *testing.T) {
+	const (
+		profile = "https://hevy.com/workout/evening"
+		morning = "https://hevy.com/workout/morning"
+		copied  = "https://hevy.com/workout/d657850b-45c1-4ea8-8b89-03339df7dd38"
+	)
+	var opened []string
+	log := buildStrengthFull(t, fakeSource{}, nil, Hevy{
+		User: "danilpapa",
+		Pages: fakePages{
+			card: hevy.Card{Link: profile, StartedAt: time.Date(2026, time.October, 31, 19, 0, 0, 0, time.UTC)},
+			pages: map[string]string{
+				profile: hevyPage("31 окт. 2026 г., 19:00", "Присед (Штанга)"),
+				morning: hevyPage("31 окт. 2026 г., 9:30", "Подтягивания"),
+				// The same evening workout under the link copied in the app.
+				copied: hevyPage("31 окт. 2026 г., 19:00", "Присед (Штанга)"),
+			},
+			opened: &opened,
+		},
+		Inbox: fakeMessages{messages: []telegram.Message{
+			command(10, "/additionalTraining "+morning),
+			command(11, "/additionalTraining утром ещё "+morning),
+			command(12, "/additionalTraining без ссылки"),
+			command(20, "/additionalTraining "+copied),
+			command(21, "/additionalTraining https://hevy.com/workout/broken"),
+			command(22, "/additionalTraining "+profile),
+		}},
+	})
+
+	if len(log.Workouts) != 2 {
+		t.Fatalf("Workouts = %+v, want the morning and the evening workout once each", log.Workouts)
+	}
+	if log.Workouts[0].Link != morning || log.Workouts[0].Source != "additional" || log.Workouts[0].StartedAt.Format("15:04") != "09:30" {
+		t.Fatalf("first workout = %+v, want the morning one", log.Workouts[0])
+	}
+	if log.Workouts[1].Link != profile {
+		t.Fatalf("second workout = %+v, want the profile one", log.Workouts[1])
+	}
+	if !slices.Equal(opened, []string{profile, morning, copied, "https://hevy.com/workout/broken"}) {
+		t.Fatalf("opened %v, want each link once and not the profile one again", opened)
+	}
+	if want := []string{"hevy"}; !slices.Equal(log.Unavailable, want) {
+		t.Fatalf("Unavailable = %v, want %v for the broken link", log.Unavailable, want)
+	}
+}
+
+func TestBuildStrengthLogKeepsAdditionalTrainingWhenProfileFails(t *testing.T) {
+	const link = "https://hevy.com/workout/extra"
+	var opened []string
+	log := buildStrengthFull(t, fakeSource{}, nil, Hevy{
+		User: "danilpapa",
+		Pages: fakePages{
+			cardErr: errors.New("the page shows no workouts"),
+			pages:   map[string]string{link: hevyPage("31 окт. 2026 г., 12:00", "Жим лежа (Штанга)")},
+			opened:  &opened,
+		},
+		Inbox: fakeMessages{messages: []telegram.Message{command(13, "/additionalTraining "+link)}},
+	})
+
+	if len(log.Workouts) != 1 || log.Workouts[0].Link != link {
+		t.Fatalf("Workouts = %+v", log.Workouts)
+	}
+	if want := []string{"hevy"}; !slices.Equal(log.Unavailable, want) {
+		t.Fatalf("Unavailable = %v, want %v", log.Unavailable, want)
+	}
+}
+
+func TestBuildStrengthLogMarksInboxFailure(t *testing.T) {
+	var opened []string
+	log := buildStrengthFull(t, fakeSource{}, nil, Hevy{
+		Pages: fakePages{opened: &opened},
+		Inbox: fakeMessages{err: errors.New("HTTP 401")},
+	})
+
+	if want := []string{"inbox"}; !slices.Equal(log.Unavailable, want) {
+		t.Fatalf("Unavailable = %v, want %v", log.Unavailable, want)
 	}
 }
 
 func TestBuildStrengthLogKeepsWorkoutsWithoutBodyData(t *testing.T) {
-	log := buildStrength(t, fakeSource{
+	const link = "https://hevy.com/workout/today"
+	var opened []string
+	log := buildStrengthFull(t, fakeSource{
 		failing: map[string]bool{"weight": true, "nutrition-log": true},
-		lists: map[string][]string{"exercise": {
-			strengthPoint("2026-10-30T15:00:00Z", "POWERLIFTING", "Присед"),
-		}},
+	}, nil, Hevy{
+		User: "danilpapa",
+		Pages: fakePages{
+			card:   hevy.Card{Link: link, StartedAt: time.Date(2026, time.October, 31, 18, 0, 0, 0, time.UTC)},
+			pages:  map[string]string{link: hevyPage("31 окт. 2026 г., 18:00", "Присед (Штанга)")},
+			opened: &opened,
+		},
 	})
 
 	if want := []string{"weight", "nutrition"}; !slices.Equal(log.Unavailable, want) {
@@ -297,13 +338,6 @@ func TestBuildStrengthLogKeepsWorkoutsWithoutBodyData(t *testing.T) {
 	}
 }
 
-func TestBuildStrengthLogReturnsWorkoutError(t *testing.T) {
-	_, err := BuildStrengthLog(context.Background(), fakeSource{failAll: true}, nil, nil, Clock{Now: testNow}, StrengthHistoryDays)
-	if err == nil {
-		t.Fatal("BuildStrengthLog() error = nil")
-	}
-}
-
 func TestStrengthLogJSON(t *testing.T) {
 	encoded, err := json.Marshal(buildStrength(t, fakeSource{}))
 	if err != nil {
@@ -314,6 +348,7 @@ func TestStrengthLogJSON(t *testing.T) {
 	for _, want := range []string{
 		`"unavailable":[]`,
 		`"workouts":[]`,
+		`"generated_at":`,
 		`"body":{"weight_kg":{"value":null,"avg_7d":null},"weighed_at":null}`,
 		`"calories_kcal":{"value":null,"avg_7d":null}`,
 	} {
