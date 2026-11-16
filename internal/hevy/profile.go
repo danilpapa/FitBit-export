@@ -19,14 +19,17 @@ const profileTimeout = 90 * time.Second
 // The profile page shows only the newest workout to a signed-out visitor: the
 // list of older ones needs an account. The card is cut to three exercises, so
 // the sets come from the workout page. The card has the workout description,
-// which the workout page does not show.
+// which the workout page does not show. The date sits under the user name, in
+// the link to the profile next to the link to the workout.
 const cardScript = `(() => {
 	const a = document.querySelector("a[href^='/workout/']");
-	if (!a) return {link: "", title: "", description: ""};
+	if (!a) return {link: "", date: "", title: "", description: ""};
+	const date = a.parentElement && a.parentElement.querySelector("a[href^='/user/'] p");
 	const title = a.querySelector("h5");
 	const description = title && title.nextElementSibling;
 	return {
 		link: a.href,
+		date: date ? date.innerText.trim() : "",
 		title: title ? title.innerText.trim() : "",
 		description: description ? description.innerText.trim() : "",
 	};
@@ -35,17 +38,25 @@ const cardScript = `(() => {
 var (
 	usernamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 	// 13 нояб. 2026 г., 18:14. Intl may put non-breaking spaces between the parts.
-	datePattern = regexp.MustCompile(`(\d{1,2})[\s\x{a0}\x{202f}]+([а-я]+)\.?[\s\x{a0}\x{202f}]+(\d{4})[\s\x{a0}\x{202f}]*г\.,?[\s\x{a0}\x{202f}]+(\d{1,2}):(\d{2})`)
+	datePattern = regexp.MustCompile(`^(\d{1,2})[\s\x{a0}\x{202f}]+([а-я]+)\.?[\s\x{a0}\x{202f}]+(\d{4})[\s\x{a0}\x{202f}]*г\.,?[\s\x{a0}\x{202f}]+(\d{1,2}):(\d{2})$`)
+	// Вчера в 18:49.
+	yesterdayPattern = regexp.MustCompile(`^Вчера в (\d{1,2}):(\d{2})$`)
+	// 3 часа назад, несколько секунд назад, or через минуту when the clocks differ a little.
+	relativePattern = regexp.MustCompile(`^(.{1,30} назад|через .{1,30})$`)
 )
 
 var monthPrefixes = []string{"янв", "фев", "мар", "апр", "ма", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"}
 
 // Card is the newest workout on a profile page.
 type Card struct {
-	Link        string    `json:"link"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	StartedAt   time.Time `json:"-"`
+	Link        string `json:"link"`
+	Date        string `json:"date"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	// StartedAt is zero when the workout ended today: Hevy shows such a workout
+	// only relative to now, as "3 часа назад", and EndedToday is true.
+	StartedAt  time.Time `json:"-"`
+	EndedToday bool      `json:"-"`
 }
 
 // Latest opens the public profile page of username and reads the card of the newest workout.
@@ -85,11 +96,11 @@ func (p *Pages) Latest(ctx context.Context, username string) (Card, error) {
 		}
 
 		if card.Link != "" {
-			if card.StartedAt, err = ParseDate(text, p.location); err != nil {
+			if card.StartedAt, card.EndedToday, err = ParseDate(card.Date, time.Now().In(p.location)); err != nil {
 				return Card{}, fmt.Errorf("read %s: %w", profile, err)
 			}
-			log.Printf("hevy: read %s in %s, the newest workout started %s",
-				profile, time.Since(started).Round(100*time.Millisecond), card.StartedAt.Format("2006-01-02 15:04"))
+			log.Printf("hevy: read %s in %s, the newest workout: %s",
+				profile, time.Since(started).Round(100*time.Millisecond), card.Date)
 			return card, nil
 		}
 		if strings.Contains(text, "не найден") {
@@ -118,12 +129,28 @@ func WithDescription(notes string, card Card) string {
 	return line + "\n" + notes
 }
 
-// ParseDate reads the first date of a Russian Hevy page, such as 13 нояб. 2026 г., 18:14.
-// Pages are rendered in the time zone of the device clock, so the date is in location.
-func ParseDate(text string, location *time.Location) (time.Time, error) {
-	match := datePattern.FindStringSubmatch(text)
+// ParseDate reads the date of a workout on a Russian Hevy page. The page is
+// rendered in the time zone of the device clock, the one of now, and shows the
+// date in one of three ways:
+//
+//	3 часа назад             the workout ended today; the start is unknown
+//	Вчера в 18:49            it started yesterday
+//	13 нояб. 2026 г., 18:14  it started earlier
+func ParseDate(line string, now time.Time) (started time.Time, endedToday bool, err error) {
+	line = strings.TrimSpace(line)
+	if relativePattern.MatchString(line) {
+		return time.Time{}, true, nil
+	}
+	if match := yesterdayPattern.FindStringSubmatch(line); match != nil {
+		hour, _ := strconv.Atoi(match[1])
+		minute, _ := strconv.Atoi(match[2])
+		year, month, day := now.AddDate(0, 0, -1).Date()
+		return time.Date(year, month, day, hour, minute, 0, 0, now.Location()), false, nil
+	}
+
+	match := datePattern.FindStringSubmatch(line)
 	if match == nil {
-		return time.Time{}, errors.New("no workout date on the page")
+		return time.Time{}, false, fmt.Errorf("unknown workout date %q", line)
 	}
 	month := 0
 	for i, prefix := range monthPrefixes {
@@ -133,11 +160,21 @@ func ParseDate(text string, location *time.Location) (time.Time, error) {
 		}
 	}
 	if month == 0 {
-		return time.Time{}, fmt.Errorf("unknown month %q", match[2])
+		return time.Time{}, false, fmt.Errorf("unknown month in workout date %q", line)
 	}
 	day, _ := strconv.Atoi(match[1])
 	year, _ := strconv.Atoi(match[3])
 	hour, _ := strconv.Atoi(match[4])
 	minute, _ := strconv.Atoi(match[5])
-	return time.Date(year, time.Month(month), day, hour, minute, 0, 0, location), nil
+	return time.Date(year, time.Month(month), day, hour, minute, 0, 0, now.Location()), false, nil
+}
+
+// WorkoutDate finds the date line in the notes of a workout page and reads it.
+func WorkoutDate(notes string, now time.Time) (started time.Time, endedToday bool, err error) {
+	for line := range strings.Lines(notes) {
+		if started, endedToday, err := ParseDate(line, now); err == nil {
+			return started, endedToday, nil
+		}
+	}
+	return time.Time{}, false, errors.New("no workout date on the page")
 }

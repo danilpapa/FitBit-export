@@ -1,6 +1,7 @@
 package report
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -29,10 +30,15 @@ type StrengthLog struct {
 type HevyWorkout struct {
 	// Source is "profile" for the newest workout on the profile page and
 	// "additional" for a link from the /additionalTraining command.
-	Source    string     `json:"source"`
-	Link      string     `json:"link"`
+	Source string `json:"source"`
+	Link   string `json:"link"`
+	// StartedAt is null for a workout that ended today: Hevy shows it as
+	// "3 часа назад", without the time.
 	StartedAt *time.Time `json:"started_at"`
 	Notes     string     `json:"notes"`
+
+	// page is the text of the workout page, to find the same workout under another link.
+	page string
 }
 
 type Body struct {
@@ -126,17 +132,18 @@ func (s *StrengthLog) readHevy(ctx context.Context, source Hevy, clock Clock) {
 			log.Printf("hevy: %v", err)
 			continue
 		}
-		workout := HevyWorkout{Source: "additional", Link: link, Notes: notes}
-		if started, err := hevy.ParseDate(notes, clock.Now.Location()); err == nil {
+		workout := HevyWorkout{Source: "additional", Link: link, Notes: notes, page: notes}
+		if started, _, err := hevy.WorkoutDate(notes, clock.Now); err == nil && !started.IsZero() {
 			workout.StartedAt = &started
 		}
 		s.addWorkout(workout)
 	}
 
+	// Workouts of today have no start time and go last. The profile one is the newest of them.
 	slices.SortStableFunc(s.Workouts, func(a, b HevyWorkout) int {
 		switch {
 		case a.StartedAt == nil && b.StartedAt == nil:
-			return 0
+			return cmp.Compare(rank(a), rank(b))
 		case a.StartedAt == nil:
 			return 1
 		case b.StartedAt == nil:
@@ -155,8 +162,9 @@ func (s *StrengthLog) readProfile(ctx context.Context, source Hevy, clock Clock)
 		log.Printf("hevy: %v", err)
 		return err
 	}
-	if !startOfDay(card.StartedAt.In(clock.Now.Location())).Equal(startOfDay(clock.Now)) {
-		log.Printf("hevy: no workout today, the newest started %s", card.StartedAt.Format("2006-01-02 15:04"))
+	startedToday := !card.StartedAt.IsZero() && startOfDay(card.StartedAt.In(clock.Now.Location())).Equal(startOfDay(clock.Now))
+	if !card.EndedToday && !startedToday {
+		log.Printf("hevy: no workout today, the newest is %q", card.Date)
 		return nil
 	}
 
@@ -165,17 +173,27 @@ func (s *StrengthLog) readProfile(ctx context.Context, source Hevy, clock Clock)
 		log.Printf("hevy: %v", err)
 		return err
 	}
-	started := card.StartedAt
-	s.addWorkout(HevyWorkout{Source: "profile", Link: card.Link, StartedAt: &started, Notes: hevy.WithDescription(notes, card)})
+	workout := HevyWorkout{Source: "profile", Link: card.Link, Notes: hevy.WithDescription(notes, card), page: notes}
+	if !card.StartedAt.IsZero() {
+		started := card.StartedAt
+		workout.StartedAt = &started
+	}
+	s.addWorkout(workout)
 	return nil
 }
 
+func rank(workout HevyWorkout) int {
+	if workout.Source == "profile" {
+		return 1
+	}
+	return 0
+}
+
 // addWorkout skips a workout that is already there: the app and the share
-// sheet give the same workout different links, so the start time decides too.
+// sheet give the same workout different links, so the page text decides too.
 func (s *StrengthLog) addWorkout(workout HevyWorkout) {
 	for _, known := range s.Workouts {
-		sameStart := known.StartedAt != nil && workout.StartedAt != nil && known.StartedAt.Equal(*workout.StartedAt)
-		if known.Link == workout.Link || sameStart {
+		if known.Link == workout.Link || known.page == workout.page {
 			return
 		}
 	}

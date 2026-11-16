@@ -234,6 +234,23 @@ func TestBuildStrengthLogSkipsOlderProfileWorkout(t *testing.T) {
 	}
 }
 
+func TestBuildStrengthLogReadsWorkoutThatEndedToday(t *testing.T) {
+	const link = "https://hevy.com/workout/fresh"
+	var opened []string
+	log := buildStrengthFull(t, fakeSource{}, nil, Hevy{
+		User: "danilpapa",
+		Pages: fakePages{
+			card:   hevy.Card{Link: link, Date: "3 часа назад", EndedToday: true},
+			pages:  map[string]string{link: hevyPage("3 часа назад", "Жим лежа (Штанга)")},
+			opened: &opened,
+		},
+	})
+
+	if len(log.Workouts) != 1 || log.Workouts[0].StartedAt != nil || log.Unavailable == nil || len(log.Unavailable) != 0 {
+		t.Fatalf("Workouts = %+v, Unavailable = %v, want today's workout without a start time", log.Workouts, log.Unavailable)
+	}
+}
+
 func TestBuildStrengthLogAddsAdditionalTraining(t *testing.T) {
 	const (
 		profile = "https://hevy.com/workout/evening"
